@@ -1,6 +1,7 @@
 package com.biteric.songfixer.ui
 
 import com.biteric.songfixer.data.Song
+import com.biteric.songfixer.files.SongWriter
 import com.biteric.songfixer.loudness.GainVerdict
 import com.biteric.songfixer.loudness.ReplayGain
 import com.biteric.songfixer.loudness.ReplayGainCheck
@@ -21,6 +22,14 @@ fun loudnessSummary(song: Song): String? {
         else -> "$off too quiet"
     }
 }
+
+/**
+ * Whether the sheet's "Normalize volume" starts checked: tags that don't follow ReplayGain 2.0 are
+ * replaced by default (even with [normalizeSetting] off); standard ones stay; songs without tags
+ * follow the setting.
+ */
+fun normalizeByDefault(song: Song, normalizeSetting: Boolean): Boolean =
+    song.extension in SongWriter.TAGGABLE && !song.volumeTagsStandard && (normalizeSetting || song.volumeTagsNotStandard)
 
 /** "−3.1 dB" (a real minus sign). */
 private fun dbText(db: Double) = String.format(Locale.US, "%.1f dB", db).replace('-', '−')

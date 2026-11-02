@@ -173,14 +173,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Songs measured without standard ReplayGain tags (none, or ones that get replaced). */
-    val toNormalize: StateFlow<Int> = repo.songs.map { repo.needNormalizing(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+    val toNormalize: StateFlow<Int> = repo.songs.map { SongRepository.needNormalizing(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     /** Writes ReplayGain tags into every measured song without standard ones. */
     fun normalizeAll() = work("Normalizing stopped") {
         var added = 0
         var kept = 0
         var failed = 0
-        for (song in repo.needNormalizing(songs.value)) {
+        for (song in SongRepository.needNormalizing(songs.value)) {
             try {
                 when (repo.normalize(song).volume) {
                     SongRepository.LyricsOutcome.ADDED -> added++

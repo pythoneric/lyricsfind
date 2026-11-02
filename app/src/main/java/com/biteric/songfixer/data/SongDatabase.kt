@@ -111,8 +111,11 @@ abstract class SongDatabase : RoomDatabase() {
             }
         }
 
+        /** Every migration, oldest first (also for the migration test). */
+        internal val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+
         fun create(context: Context) = Room.databaseBuilder(context, SongDatabase::class.java, "songfixer.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(*MIGRATIONS)
             .build()
     }
 }

@@ -220,10 +220,7 @@ fun SongSheet(
 
             // Volume: ReplayGain tags; players that read them (BitEric does) level the song. The audio isn't changed.
             val canNormalize = song.extension in SongWriter.TAGGABLE
-            // Tags that don't follow ReplayGain 2.0 are replaced by default; standard ones stay.
-            var normalize by remember(song.id) {
-                mutableStateOf(canNormalize && !song.volumeTagsStandard && (settings.normalize || song.volumeTagsNotStandard))
-            }
+            var normalize by remember(song.id) { mutableStateOf(normalizeByDefault(song, settings.normalize)) }
             CheckRow(
                 "Normalize volume",
                 when {

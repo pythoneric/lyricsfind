@@ -327,10 +327,6 @@ class SongRepository(
     suspend fun remeasure(song: Song): Applied =
         apply(song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = false, normalize = true, replaceReplayGain = true)
 
-    /** Songs measured, whose files can take ReplayGain tags and don't have standard ones yet. */
-    fun needNormalizing(songs: List<Song>): List<Song> =
-        songs.filter { it.loudnessLufs != null && !it.volumeTagsStandard && it.extension in SongWriter.TAGGABLE }
-
     /** Adds the album cover only, names untouched. */
     suspend fun addCover(song: Song): Applied =
         apply(song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = false, addCover = true, releaseGroupId = song.best?.releaseGroupId)
@@ -380,6 +376,10 @@ class SongRepository(
     }
 
     companion object {
+        /** Songs measured, whose files can take ReplayGain tags and don't have standard ones yet. */
+        fun needNormalizing(songs: List<Song>): List<Song> =
+            songs.filter { it.loudnessLufs != null && !it.volumeTagsStandard && it.extension in SongWriter.TAGGABLE }
+
         fun rankLyrics(results: List<LrclibTrack>, durationSec: Int?): List<LrclibTrack> = results
             .filter { LyricsFinder.text(it) != null }
             .sortedWith(
