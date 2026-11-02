@@ -1,6 +1,8 @@
 package com.biteric.songfixer.ui
 
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -20,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.biteric.songfixer.BuildConfig
@@ -34,15 +37,37 @@ private sealed interface Cover {
 }
 
 /**
- * The cover a fix would add, loaded from [url] (resolved by [findUrl], which may search for the
+ * The cover a fix would add, loaded from the URL [findUrl] resolves (it may search for the
  * album). A placeholder when there's none.
  */
 @Composable
-fun CoverPreview(key: Any?, findUrl: suspend () -> String?, size: Dp = 96.dp) {
+fun CoverPreview(key: Any?, findUrl: suspend () -> String?, size: Dp = 96.dp) =
+    CoverBox(key, size, "No cover found") {
+        findUrl()?.let { Http.download(it, "SongFixer/${BuildConfig.VERSION_NAME} ( ${Http.USER_AGENT_CONTACT} )")?.first }
+    }
+
+/** The cover in the song's file now; a placeholder when it has none. [key] reloads it (after a fix). */
+@Composable
+fun FileCover(uri: String, key: Any?, size: Dp = 96.dp) {
+    val context = LocalContext.current
+    CoverBox(listOf(uri, key), size, "No cover in the file") {
+        withContext(Dispatchers.IO) {
+            val r = MediaMetadataRetriever()
+            try {
+                r.setDataSource(context, Uri.parse(uri))
+                r.embeddedPicture
+            } finally {
+                r.release()
+            }
+        }
+    }
+}
+
+@Composable
+private fun CoverBox(key: Any?, size: Dp, missing: String, load: suspend () -> ByteArray?) {
     val cover by produceState<Cover>(Cover.Loading, key) {
         value = try {
-            val url = findUrl()
-            val bytes = url?.let { Http.download(it, "SongFixer/${BuildConfig.VERSION_NAME} ( ${Http.USER_AGENT_CONTACT} )")?.first }
+            val bytes = load()
             val bitmap = bytes?.let { withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(it, 0, it.size) } }
             if (bitmap != null) Cover.Loaded(bitmap.asImageBitmap()) else Cover.None
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -58,7 +83,7 @@ fun CoverPreview(key: Any?, findUrl: suspend () -> String?, size: Dp = 96.dp) {
     ) {
         when (val c = cover) {
             Cover.Loading -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-            Cover.None -> Icon(Icons.Default.Album, contentDescription = "No cover found", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Cover.None -> Icon(Icons.Default.Album, contentDescription = missing, tint = MaterialTheme.colorScheme.onSurfaceVariant)
             is Cover.Loaded -> Image(c.image, contentDescription = "Album cover", contentScale = ContentScale.Crop, modifier = Modifier.size(size))
         }
     }

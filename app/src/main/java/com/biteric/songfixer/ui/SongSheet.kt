@@ -1,5 +1,6 @@
 package com.biteric.songfixer.ui
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -192,29 +194,37 @@ fun SongSheet(
                 },
                 addLyrics,
             ) { addLyrics = it }
-            // The cover the fix would add, from the chosen match's album (or a search by album name).
-            val canCover = song.extension in SongWriter.TAGGABLE && song.hasCover != true
+            // Cover: the one in the file now next to the album's front cover (from the chosen match's
+            // album, or a search by album name). Ticked = the new one goes in, also over an old one.
+            val canCover = song.extension in SongWriter.TAGGABLE
             var addCover by remember(song.id) { mutableStateOf(settings.addCover && canCover) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    CheckRow(
-                        "Add cover art",
-                        when {
-                            song.hasCover == true -> "This song has a cover already"
-                            song.extension !in SongWriter.TAGGABLE -> ".${song.extension} files can't hold a cover here"
-                            else -> "The album's front cover, from the Cover Art Archive"
-                        },
-                        addCover,
-                        enabled = canCover,
-                    ) { addCover = it }
-                }
-                if (canCover) {
-                    val rgId = candidate?.releaseGroupId?.takeIf { candidate.album == album }
-                    CoverPreview(key = listOf(rgId, album, artist), findUrl = {
-                        // Typing in the album box: wait for a pause before searching.
-                        if (rgId == null) kotlinx.coroutines.delay(700)
-                        coverPreview(rgId, album, artist)
-                    }, size = 72.dp)
+            CheckRow(
+                "Add cover art",
+                when {
+                    !canCover -> ".${song.extension} files can't hold a cover here"
+                    song.hasCover != true -> "The album's front cover, from the Cover Art Archive"
+                    addCover -> "The new cover replaces the one in the file"
+                    else -> "The file keeps its cover"
+                },
+                addCover,
+                enabled = canCover,
+            ) { addCover = it }
+            if (canCover) {
+                val rgId = candidate?.releaseGroupId?.takeIf { candidate.album == album }
+                Row(
+                    Modifier.padding(start = 48.dp, top = 4.dp, bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    ChoosableCover("Now", selected = !addCover, onClick = { addCover = false }) {
+                        FileCover(song.uri, key = song.hasCover)
+                    }
+                    ChoosableCover("New", selected = addCover, onClick = { addCover = true }) {
+                        CoverPreview(key = listOf(rgId, album, artist), findUrl = {
+                            // Typing in the album box: wait for a pause before searching.
+                            if (rgId == null) kotlinx.coroutines.delay(700)
+                            coverPreview(rgId, album, artist)
+                        })
+                    }
                 }
             }
 
@@ -252,9 +262,9 @@ fun SongSheet(
                 TextButton(onClick = onAddLyrics, enabled = !busy) { Text("Add lyrics only") }
             }
             if ((song.status == SongStatus.OK || song.status == SongStatus.FIXED || song.status == SongStatus.KEPT) &&
-                song.hasCover != true && song.extension in SongWriter.TAGGABLE
+                song.extension in SongWriter.TAGGABLE
             ) {
-                TextButton(onClick = onAddCover, enabled = !busy) { Text("Add cover only") }
+                TextButton(onClick = onAddCover, enabled = !busy) { Text(if (song.hasCover == true) "Replace cover only" else "Add cover only") }
             }
             if (song.extension in SongWriter.TAGGABLE) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -316,6 +326,26 @@ private fun Field(label: String, value: String?) {
 @Composable
 private fun Edit(label: String, value: String, onChange: (String) -> Unit) {
     OutlinedTextField(value, onChange, Modifier.fillMaxWidth().padding(vertical = 2.dp), label = { Text(label) }, singleLine = true)
+}
+
+/** A cover to pick, with its label under it; the picked one is outlined. */
+@Composable
+private fun ChoosableCover(label: String, selected: Boolean, onClick: () -> Unit, cover: @Composable () -> Unit) {
+    val shape = RoundedCornerShape(10.dp)
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            Modifier
+                .border(2.dp, if (selected) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.Transparent, shape)
+                .padding(4.dp)
+                .clickable(onClick = onClick),
+        ) { cover() }
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
 }
 
 @Composable

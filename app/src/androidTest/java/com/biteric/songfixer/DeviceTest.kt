@@ -112,6 +112,29 @@ class DeviceTest {
         f.delete()
     }
 
+    /** The user picked the new cover over the old one in the sheet: it takes the old one's place, and only one stays. */
+    @Test
+    fun replacesACoverWhenChosen() = runTest {
+        val f = copyAsset("test.mp3")
+        val writer = SongWriter(appContext)
+        val red = testCover(android.graphics.Color.RED)
+        val blue = testCover(android.graphics.Color.BLUE)
+        writer.writeTags(Uri.fromFile(f), "mp3", NewNames("Hello", "Adele", "", ""), cover = red)
+        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), cover = blue, replaceCover = true).cover)
+        val tag = AudioFileIO.read(f).tag
+        assertEquals(1, tag.artworkList.size)
+        assertTrue(tag.firstArtwork.binaryData.contentEquals(blue.bytes))
+        // What players see, too.
+        val r = android.media.MediaMetadataRetriever()
+        r.setDataSource(f.absolutePath)
+        val picture = r.embeddedPicture
+        r.release()
+        assertTrue(picture != null && picture.contentEquals(blue.bytes))
+        assertEquals("Hello", tag.getFirst(FieldKey.TITLE))
+        assertEquals(10, AudioFileIO.read(f).audioHeader.trackLength)
+        f.delete()
+    }
+
     @Test
     fun writesAndReadsBackReplayGainTags() = runTest {
         val f = copyAsset("test.mp3")
