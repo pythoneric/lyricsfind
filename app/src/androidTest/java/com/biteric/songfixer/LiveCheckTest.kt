@@ -94,6 +94,60 @@ class LiveCheckTest {
     }
 
     /**
+     * Puts volume tags another program might have left into the songs whose file name contains
+     * `-e oldtags <text>`: `-e style rg1` (ReplayGain 1.0, 89 dB, with album gain) or `r128`
+     * (R128_TRACK_GAIN only). Other TXXX frames stay. For checking that the app replaces them.
+     */
+    @Test
+    fun putOldVolumeTags() = runBlocking {
+        val match = InstrumentationRegistry.getArguments().getString("oldtags")
+        assumeTrue(match != null)
+        val style = InstrumentationRegistry.getArguments().getString("style") ?: "rg1"
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SongFixerApp
+        assumeTestFolder(app)
+        val song = app.repository.songs.first().first { it.fileName.contains(match!!) && it.extension == "mp3" }
+        val uri = android.net.Uri.parse(song.uri)
+        val copy = java.io.File(app.cacheDir, "oldtags.mp3")
+        app.contentResolver.openInputStream(uri)!!.use { input -> copy.outputStream().use { input.copyTo(it) } }
+        val audio = org.jaudiotagger.audio.AudioFileIO.read(copy)
+        val tag = audio.tagOrCreateAndSetDefault as org.jaudiotagger.tag.id3.AbstractID3v2Tag
+        fun txxx(d: String, v: String) = tag.createFrame("TXXX").apply { body = org.jaudiotagger.tag.id3.framebody.FrameBodyTXXX(0, d, v) }
+        val volume = setOf("REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK", "REPLAYGAIN_REFERENCE_LOUDNESS", "REPLAYGAIN_ALBUM_GAIN", "REPLAYGAIN_ALBUM_PEAK", "R128_TRACK_GAIN")
+        val others = runCatching { tag.getFields("TXXX") }.getOrDefault(emptyList())
+            .filterIsInstance<org.jaudiotagger.tag.id3.AbstractID3v2Frame>()
+            .filter { (it.body as? org.jaudiotagger.tag.id3.framebody.FrameBodyTXXX)?.description?.uppercase() !in volume }
+        val old = when (style) {
+            "r128" -> listOf(txxx("R128_TRACK_GAIN", "-1536"))
+            else -> listOf(
+                txxx("replaygain_track_gain", "-3.10 dB"),
+                txxx("replaygain_track_peak", "0.950000"),
+                txxx("REPLAYGAIN_REFERENCE_LOUDNESS", "89.0 dB"),
+                txxx("REPLAYGAIN_ALBUM_GAIN", "-2.50 dB"),
+                txxx("REPLAYGAIN_ALBUM_PEAK", "0.990000"),
+            )
+        }
+        tag.setFrame("TXXX", others + old + txxx("SongFixer Test", "keep me"))
+        audio.commit()
+        app.contentResolver.openOutputStream(uri, "wt")!!.use { out -> copy.inputStream().use { it.copyTo(out) } }
+        copy.delete()
+        Log.i("LiveCheck", "old $style volume tags put in ${song.fileName}")
+        Unit
+    }
+
+    /** Reads the folder and measures / reads volume tags like the check's loudness phase (`-e volume 1`), and logs verdicts. */
+    @Test
+    fun readVolumeTags() = runBlocking {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("volume") == "1")
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SongFixerApp
+        assumeTestFolder(app)
+        app.repository.sync(app.settings.current.folderUri!!)
+        while (app.repository.measureNext()) Unit
+        for (s in app.repository.songs.first()) {
+            Log.i("LiveCheck", "${s.fileName} | ${s.loudnessLufs} LUFS gain ${s.trackGainDb} | tags ${s.existingTrackGain} / ${s.existingTrackPeak} / ${s.existingReference} | ${s.gainVerdict}")
+        }
+    }
+
+    /**
      * Cases that change files run only when the app is pointed at a test folder (its name has
      * "SongFixerTest" in it), never at someone's real music.
      */

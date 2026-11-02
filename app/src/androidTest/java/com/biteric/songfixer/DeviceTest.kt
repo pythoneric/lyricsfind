@@ -135,15 +135,89 @@ class DeviceTest {
         assertTrue("other TXXX kept: $descriptions", "MusicBrainz Album Id" in descriptions)
         assertEquals(4, descriptions.size)
 
-        // Existing tags stay unless re-measured.
-        val other = com.biteric.songfixer.loudness.Loudness(lufs = -20.0, truePeak = 0.5)
-        assertEquals(SongWriter.EmbedResult.KEPT_EXISTING, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = other).replayGain)
+        // Standard tags within 1 dB of the measurement stay unless re-measured.
+        val close = com.biteric.songfixer.loudness.Loudness(lufs = -10.2, truePeak = 0.5)
+        assertEquals(SongWriter.EmbedResult.KEPT_EXISTING, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = close).replayGain)
         assertEquals("-8.42 dB", com.biteric.songfixer.files.ReplayGainTags.trackGain(AudioFileIO.read(f).tag))
-        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = other, replaceReplayGain = true).replayGain)
+        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = close, replaceReplayGain = true).replayGain)
+        assertEquals("-7.80 dB", com.biteric.songfixer.files.ReplayGainTags.trackGain(AudioFileIO.read(f).tag))
+        // Further off than 1 dB: corrected without asking for a re-measure.
+        val other = com.biteric.songfixer.loudness.Loudness(lufs = -20.0, truePeak = 0.5)
+        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = other).replayGain)
         val replaced = AudioFileIO.read(f).tag
         assertEquals("2.00 dB", com.biteric.songfixer.files.ReplayGainTags.trackGain(replaced))
         assertEquals(4, (replaced as org.jaudiotagger.tag.id3.AbstractID3v2Tag).getFields("TXXX").size)
         assertEquals(10, AudioFileIO.read(f).audioHeader.trackLength)
+        f.delete()
+    }
+
+    private fun txxx(tag: org.jaudiotagger.tag.id3.AbstractID3v2Tag, description: String, value: String) =
+        tag.createFrame("TXXX").apply { body = org.jaudiotagger.tag.id3.framebody.FrameBodyTXXX(0, description, value) }
+
+    private fun txxxValues(f: File): Map<String, String> =
+        (AudioFileIO.read(f).tag as org.jaudiotagger.tag.id3.AbstractID3v2Tag).getFields("TXXX")
+            .map { (it as org.jaudiotagger.tag.id3.AbstractID3v2Frame).body as org.jaudiotagger.tag.id3.framebody.FrameBodyTXXX }
+            .associate { it.description to it.textWithoutTrailingNulls }
+
+    /** ReplayGain 1.0 tags (89 dB) are read as not standard and replaced; album gain and other TXXX frames stay. */
+    @Test
+    fun replacesReplayGain1TagsKeepingTheOthers() = runTest {
+        val f = copyAsset("test.mp3")
+        AudioFileIO.read(f).let { audio ->
+            val tag = audio.tagOrCreateAndSetDefault as org.jaudiotagger.tag.id3.AbstractID3v2Tag
+            tag.setFrame("TXXX", listOf(
+                txxx(tag, "MusicBrainz Album Id", "abc"),
+                txxx(tag, "replaygain_track_gain", "-3.10 dB"),
+                txxx(tag, "replaygain_track_peak", "0.950000"),
+                txxx(tag, "REPLAYGAIN_REFERENCE_LOUDNESS", "89.0 dB"),
+                txxx(tag, "REPLAYGAIN_ALBUM_GAIN", "-2.50 dB"),
+                txxx(tag, "REPLAYGAIN_ALBUM_PEAK", "0.990000"),
+                txxx(tag, "R128_TRACK_GAIN", "-1234"),
+            ))
+            audio.commit()
+        }
+        val writer = SongWriter(appContext)
+        val found = writer.readVolumeTags(Uri.fromFile(f), "mp3")
+        assertEquals(com.biteric.songfixer.loudness.VolumeTags("-3.10 dB", "0.950000", "89.0 dB", "-1234"), found)
+        val loud = com.biteric.songfixer.loudness.Loudness(lufs = -9.58, truePeak = 0.988)
+        assertEquals(com.biteric.songfixer.loudness.GainVerdict.RG1, com.biteric.songfixer.loudness.ReplayGainCheck.verdict(found, loud.lufs))
+
+        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = loud).replayGain)
+        val after = txxxValues(f)
+        assertEquals(
+            mapOf(
+                "MusicBrainz Album Id" to "abc",
+                "REPLAYGAIN_ALBUM_GAIN" to "-2.50 dB",
+                "REPLAYGAIN_ALBUM_PEAK" to "0.990000",
+                // Not what was replaced (the RG 1.0 tags were), so it stays.
+                "R128_TRACK_GAIN" to "-1234",
+                "REPLAYGAIN_TRACK_GAIN" to "-8.42 dB",
+                "REPLAYGAIN_TRACK_PEAK" to "0.988000",
+                "REPLAYGAIN_REFERENCE_LOUDNESS" to "-18.00 LUFS",
+            ),
+            after,
+        )
+        val now = writer.readVolumeTags(Uri.fromFile(f), "mp3")
+        assertEquals(com.biteric.songfixer.loudness.GainVerdict.STANDARD, com.biteric.songfixer.loudness.ReplayGainCheck.verdict(now, loud.lufs))
+        assertEquals(10, AudioFileIO.read(f).audioHeader.trackLength)
+        f.delete()
+    }
+
+    /** A file whose only volume tag is R128_TRACK_GAIN gets ReplayGain 2.0 tags in its place. */
+    @Test
+    fun replacesAnR128OnlyTag() = runTest {
+        val f = copyAsset("test.mp3")
+        AudioFileIO.read(f).let { audio ->
+            val tag = audio.tagOrCreateAndSetDefault as org.jaudiotagger.tag.id3.AbstractID3v2Tag
+            tag.setFrame("TXXX", listOf(txxx(tag, "MusicBrainz Album Id", "abc"), txxx(tag, "R128_TRACK_GAIN", "-1234")))
+            audio.commit()
+        }
+        val loud = com.biteric.songfixer.loudness.Loudness(lufs = -9.58, truePeak = 0.988)
+        assertEquals(SongWriter.EmbedResult.ADDED, SongWriter(appContext).writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = loud).replayGain)
+        assertEquals(
+            setOf("MusicBrainz Album Id", "REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK", "REPLAYGAIN_REFERENCE_LOUDNESS"),
+            txxxValues(f).keys,
+        )
         f.delete()
     }
 

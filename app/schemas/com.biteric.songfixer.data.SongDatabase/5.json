@@ -1,0 +1,175 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 5,
+    "identityHash": "01a38ec0c8a28b30737d8ae9c8ae8df0",
+    "entities": [
+      {
+        "tableName": "songs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uri` TEXT NOT NULL, `fileName` TEXT NOT NULL, `folder` TEXT NOT NULL, `size` INTEGER NOT NULL, `modified` INTEGER NOT NULL, `durationMs` INTEGER, `title` TEXT, `artist` TEXT, `album` TEXT, `genre` TEXT, `status` TEXT NOT NULL, `candidates` TEXT NOT NULL, `lyricsFound` INTEGER, `note` TEXT, `lyricsInFile` INTEGER, `hasCover` INTEGER, `loudnessLufs` REAL, `trackGainDb` REAL, `truePeak` REAL, `loudnessChecked` INTEGER NOT NULL, `replayGainInFile` INTEGER, `existingTrackGain` TEXT, `existingTrackPeak` TEXT, `existingReference` TEXT, `gainVerdict` TEXT)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uri",
+            "columnName": "uri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileName",
+            "columnName": "fileName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "folder",
+            "columnName": "folder",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "size",
+            "columnName": "size",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modified",
+            "columnName": "modified",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "durationMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "artist",
+            "columnName": "artist",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "album",
+            "columnName": "album",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "genre",
+            "columnName": "genre",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "candidates",
+            "columnName": "candidates",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lyricsFound",
+            "columnName": "lyricsFound",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lyricsInFile",
+            "columnName": "lyricsInFile",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "hasCover",
+            "columnName": "hasCover",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "loudnessLufs",
+            "columnName": "loudnessLufs",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "trackGainDb",
+            "columnName": "trackGainDb",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "truePeak",
+            "columnName": "truePeak",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "loudnessChecked",
+            "columnName": "loudnessChecked",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "replayGainInFile",
+            "columnName": "replayGainInFile",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "existingTrackGain",
+            "columnName": "existingTrackGain",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "existingTrackPeak",
+            "columnName": "existingTrackPeak",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "existingReference",
+            "columnName": "existingReference",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "gainVerdict",
+            "columnName": "gainVerdict",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_songs_uri",
+            "unique": true,
+            "columnNames": [
+              "uri"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_songs_uri` ON `${TABLE_NAME}` (`uri`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '01a38ec0c8a28b30737d8ae9c8ae8df0')"
+    ]
+  }
+}

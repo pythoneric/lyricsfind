@@ -220,17 +220,18 @@ fun SongSheet(
 
             // Volume: ReplayGain tags; players that read them (BitEric does) level the song. The audio isn't changed.
             val canNormalize = song.extension in SongWriter.TAGGABLE
-            var normalize by remember(song.id) { mutableStateOf(settings.normalize && canNormalize && song.replayGainInFile != true) }
+            var normalize by remember(song.id) { mutableStateOf(normalizeByDefault(song, settings.normalize)) }
             CheckRow(
                 "Normalize volume",
                 when {
                     !canNormalize -> ".${song.extension} files can't hold volume tags here"
-                    song.replayGainInFile == true -> "This song has volume tags already (use Re-measure to replace them)"
+                    song.volumeTagsStandard -> "Volume tags already follow the standard"
+                    song.volumeTagsNotStandard -> volumeTagsNote(song)!!
                     song.trackGainDb != null -> "ReplayGain tags: ${String.format(java.util.Locale.US, "%+.1f dB", song.trackGainDb)} to reach −18 LUFS; the audio isn't changed"
                     else -> "Measures it, then adds ReplayGain tags; the audio isn't changed"
                 },
                 normalize,
-                enabled = canNormalize && song.replayGainInFile != true,
+                enabled = canNormalize && !song.volumeTagsStandard,
             ) { normalize = it }
 
             Spacer(Modifier.height(12.dp))
@@ -257,7 +258,7 @@ fun SongSheet(
             }
             if (song.extension in SongWriter.TAGGABLE) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (song.replayGainInFile != true && song.status != SongStatus.NEW) {
+                    if (!song.volumeTagsStandard && song.status != SongStatus.NEW) {
                         TextButton(onClick = onNormalize, enabled = !busy) { Text("Normalize volume only") }
                     }
                     // Measures again and replaces volume tags, the app's or another program's.
