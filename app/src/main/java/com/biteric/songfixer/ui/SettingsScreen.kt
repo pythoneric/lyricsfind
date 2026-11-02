@@ -85,8 +85,9 @@ fun SettingsScreen(
             SwitchRow("Add the lyrics (from LRCLIB, synced when available) into the file", settings.addLyrics) { v -> onChange { it.copy(addLyrics = v) } }
             SwitchRow("Also save lyrics as a .lrc file next to the song", settings.lrcFiles) { v -> onChange { it.copy(lrcFiles = v) } }
             SwitchRow("Add the album cover (from the Cover Art Archive) to songs without one", settings.addCover) { v -> onChange { it.copy(addCover = v) } }
+            SwitchRow("Normalize volume: measure loudness and add ReplayGain tags (−18 LUFS)", settings.normalize) { v -> onChange { it.copy(normalize = v) } }
             Text(
-                "Lyrics and covers already in a file are never replaced. Formats without a lyrics tag (e.g. .opus) always get a .lrc file.",
+                "Lyrics, covers and volume tags already in a file are never replaced (Re-measure replaces volume tags). The audio itself is never changed. Formats without a lyrics tag (e.g. .opus) always get a .lrc file.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

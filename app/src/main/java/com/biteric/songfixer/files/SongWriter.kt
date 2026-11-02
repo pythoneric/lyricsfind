@@ -14,6 +14,7 @@ import org.jaudiotagger.tag.images.AndroidArtwork
 import org.jaudiotagger.tag.reference.PictureTypes
 import android.graphics.BitmapFactory
 import com.biteric.songfixer.online.CoverImage
+import com.biteric.songfixer.loudness.Loudness
 import java.io.File
 
 /** The names to give a song. Blank fields are left as they are in the file. */
@@ -50,6 +51,8 @@ class SongWriter(private val context: Context) {
         replaceLyrics: Boolean = false,
         cover: CoverImage? = null,
         replaceCover: Boolean = false,
+        replayGain: Loudness? = null,
+        replaceReplayGain: Boolean = false,
     ): Written = withContext(Dispatchers.IO) {
         if (extension !in TAGGABLE) throw Failed("Tags of .$extension files can't be written")
         val dir = File(context.cacheDir, "tag-edit").apply { mkdirs() }
@@ -93,6 +96,14 @@ class SongWriter(private val context: Context) {
                     tag.setField(art)
                 }.fold({ EmbedResult.ADDED }, { EmbedResult.UNSUPPORTED })
             }
+            // ReplayGain: tags only, the audio is untouched. Existing values stay unless re-measured.
+            val gainResult = when {
+                replayGain == null -> null
+                !ReplayGainTags.supports(tag) -> EmbedResult.UNSUPPORTED
+                !replaceReplayGain && ReplayGainTags.trackGain(tag) != null -> EmbedResult.KEPT_EXISTING
+                runCatching { ReplayGainTags.write(tag, replayGain) }.getOrDefault(false) -> EmbedResult.ADDED
+                else -> EmbedResult.UNSUPPORTED
+            }
             runCatching { audio.commit() }.getOrElse { throw Failed("The tags couldn't be written: ${it.message}") }
             // Never copy a damaged file over the song.
             val check = runCatching { AudioFileIO.read(copy) }.getOrNull()
@@ -103,7 +114,7 @@ class SongWriter(private val context: Context) {
             // "wt": replace the whole file (plain "w" doesn't shorten it on some Android versions).
             context.contentResolver.openOutputStream(uri, "wt")?.use { out -> copy.inputStream().use { it.copyTo(out) } }
                 ?: throw Failed("The song's file can't be changed")
-            Written(embed, coverResult)
+            Written(embed, coverResult, gainResult)
         } finally {
             copy.delete()
         }
@@ -113,7 +124,7 @@ class SongWriter(private val context: Context) {
     enum class EmbedResult { ADDED, KEPT_EXISTING, UNSUPPORTED }
 
     /** What happened to the lyrics and the cover (null = none given). */
-    data class Written(val lyrics: EmbedResult?, val cover: EmbedResult?)
+    data class Written(val lyrics: EmbedResult?, val cover: EmbedResult?, val replayGain: EmbedResult? = null)
 
     /** Renames the file (and its .lrc lyrics file, if there is one); returns its new URI. */
     suspend fun rename(uri: Uri, currentName: String, newName: String): Uri = withContext(Dispatchers.IO) {

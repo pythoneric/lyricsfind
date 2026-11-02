@@ -16,6 +16,8 @@ import com.biteric.songfixer.match.SongInfo
 import com.biteric.songfixer.match.Text
 import com.biteric.songfixer.match.Verdict
 import com.biteric.songfixer.online.AcoustIdKeyException
+import com.biteric.songfixer.loudness.Loudness
+import com.biteric.songfixer.loudness.LoudnessAnalyzer
 import com.biteric.songfixer.match.CoverFinder
 import com.biteric.songfixer.online.CoverArtApi
 import com.biteric.songfixer.online.CoverImage
@@ -36,6 +38,7 @@ class SongRepository(
     private val lrclib: LrclibApi,
     private val coverFinder: CoverFinder,
     private val coverArt: CoverArtApi,
+    private val loudness: LoudnessAnalyzer,
 ) {
     val songs = dao.observeAll()
     val counts = dao.observeCounts()
@@ -135,7 +138,13 @@ class SongRepository(
     enum class LyricsOutcome { ADDED, ALREADY_THERE, NOT_ONLINE, OFFLINE, NOT_ASKED }
 
     /** Same outcomes for the cover: ADDED, ALREADY_THERE, NOT_ONLINE (no album or no cover), OFFLINE, NOT_ASKED. */
-    class Applied(val song: Song, val lyrics: LyricsOutcome, val cover: LyricsOutcome = LyricsOutcome.NOT_ASKED)
+    class Applied(
+        val song: Song,
+        val lyrics: LyricsOutcome,
+        val cover: LyricsOutcome = LyricsOutcome.NOT_ASKED,
+        /** ADDED (ReplayGain tags written), ALREADY_THERE (the file had some), NOT_ONLINE (couldn't measure / format can't hold them). */
+        val volume: LyricsOutcome = LyricsOutcome.NOT_ASKED,
+    )
 
     /**
      * Writes [names] into the song's tags, renames it to "Artist - Title" and/or adds its lyrics
@@ -151,6 +160,8 @@ class SongRepository(
         addLyrics: Boolean,
         addCover: Boolean = false,
         releaseGroupId: String? = null,
+        normalize: Boolean = false,
+        replaceReplayGain: Boolean = false,
     ): Applied {
         var uri = Uri.parse(song.uri)
         var fileName = song.fileName
@@ -186,10 +197,30 @@ class SongRepository(
         } else if (addCover && song.hasCover == true) {
             coverOutcome = LyricsOutcome.ALREADY_THERE
         }
+        // Volume: ReplayGain tags from the song's measured loudness (measured now if it wasn't).
+        var volumeOutcome = LyricsOutcome.NOT_ASKED
+        var measured: Song = song
+        var gain: Loudness? = null
+        if (normalize && canEmbed) {
+            measured = if (song.loudnessLufs == null || replaceReplayGain) measure(song) else song
+            gain = measured.loudnessLufs?.let { Loudness(it, measured.truePeak ?: 1.0) }
+            if (gain == null) volumeOutcome = LyricsOutcome.NOT_ONLINE
+        } else if (normalize) {
+            volumeOutcome = LyricsOutcome.NOT_ONLINE
+        }
         var embedded: SongWriter.EmbedResult? = null
-        if (writeTags || ((lyrics != null || cover != null) && canEmbed)) {
-            val written = writer.writeTags(uri, song.extension, if (writeTags) names else NewNames("", "", "", ""), lyrics.takeIf { canEmbed }, cover = cover)
+        if (writeTags || ((lyrics != null || cover != null || gain != null) && canEmbed)) {
+            val written = writer.writeTags(
+                uri, song.extension, if (writeTags) names else NewNames("", "", "", ""), lyrics.takeIf { canEmbed }, cover = cover,
+                replayGain = gain, replaceReplayGain = replaceReplayGain,
+            )
             embedded = written.lyrics
+            volumeOutcome = when (written.replayGain) {
+                SongWriter.EmbedResult.ADDED -> LyricsOutcome.ADDED
+                SongWriter.EmbedResult.KEPT_EXISTING -> LyricsOutcome.ALREADY_THERE
+                SongWriter.EmbedResult.UNSUPPORTED -> LyricsOutcome.NOT_ONLINE
+                null -> volumeOutcome
+            }
             when (written.cover) {
                 SongWriter.EmbedResult.KEPT_EXISTING -> coverOutcome = LyricsOutcome.ALREADY_THERE
                 SongWriter.EmbedResult.UNSUPPORTED -> coverOutcome = LyricsOutcome.NOT_ONLINE
@@ -206,7 +237,7 @@ class SongRepository(
         runCatching { writer.notifyMediaStore(uri) }
         val best = song.best
         val sameAsBest = best != null && Text.same(best.title, names.title) && Text.same(best.artist, names.artist)
-        val fixed = song.copy(
+        val fixed = measured.copy(
             uri = uri.toString(),
             fileName = fileName,
             title = if (writeTags) names.title.ifBlank { song.title } else song.title,
@@ -223,11 +254,46 @@ class SongRepository(
             },
             lyricsInFile = if (outcome == LyricsOutcome.ADDED || outcome == LyricsOutcome.ALREADY_THERE) true else song.lyricsInFile,
             hasCover = if (coverOutcome == LyricsOutcome.ADDED || coverOutcome == LyricsOutcome.ALREADY_THERE) true else song.hasCover,
+            replayGainInFile = if (volumeOutcome == LyricsOutcome.ADDED || volumeOutcome == LyricsOutcome.ALREADY_THERE) true else measured.replayGainInFile,
             note = null,
         )
         dao.update(fixed)
-        return Applied(fixed, outcome, coverOutcome)
+        return Applied(fixed, outcome, coverOutcome, volumeOutcome)
     }
+
+    /**
+     * Measures the next song not measured yet (in the background check); false when none are left.
+     * A failure is recorded too, so the song isn't tried again by itself.
+     */
+    suspend fun measureNext(): Boolean {
+        val song = dao.nextUnmeasured() ?: return false
+        dao.update(measure(song))
+        return true
+    }
+
+    suspend fun unmeasuredCount() = dao.unmeasuredCount()
+
+    /** The song with its loudness, true peak and track gain filled in (not saved). */
+    private suspend fun measure(song: Song): Song = try {
+        val l = loudness.measure(Uri.parse(song.uri))
+        song.copy(loudnessLufs = l.lufs, trackGainDb = l.trackGainDb, truePeak = l.truePeak, loudnessChecked = true)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        song.copy(loudnessLufs = null, trackGainDb = null, truePeak = null, loudnessChecked = true)
+    }
+
+    /** Writes ReplayGain tags only, names untouched; existing tags stay. */
+    suspend fun normalize(song: Song): Applied =
+        apply(song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = false, normalize = true)
+
+    /** Measures the song again and replaces its ReplayGain tags ("Re-measure"). */
+    suspend fun remeasure(song: Song): Applied =
+        apply(song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = false, normalize = true, replaceReplayGain = true)
+
+    /** Songs measured, whose files can take ReplayGain tags and don't have them yet. */
+    fun needNormalizing(songs: List<Song>): List<Song> =
+        songs.filter { it.loudnessLufs != null && it.replayGainInFile != true && it.extension in SongWriter.TAGGABLE }
 
     /** Adds the album cover only, names untouched. */
     suspend fun addCover(song: Song): Applied =

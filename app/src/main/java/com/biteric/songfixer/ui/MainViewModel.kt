@@ -26,7 +26,14 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /** The background check as the screen shows it. */
-data class CheckState(val running: Boolean = false, val done: Int = 0, val total: Int = 0, val error: String? = null)
+data class CheckState(
+    val running: Boolean = false,
+    val done: Int = 0,
+    val total: Int = 0,
+    val error: String? = null,
+    /** Measuring loudness (after the names). */
+    val measuring: Boolean = false,
+)
 
 /** [searched] = a search finished (so an empty [results] means nothing was found). */
 data class LyricsSearch(
@@ -67,6 +74,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 done = info.progress.getInt(CheckWorker.KEY_DONE, 0),
                 total = info.progress.getInt(CheckWorker.KEY_TOTAL, 0),
                 error = if (info.state == WorkInfo.State.FAILED) info.outputData.getString(CheckWorker.KEY_ERROR) else null,
+                measuring = info.progress.getString(CheckWorker.KEY_PHASE) == CheckWorker.PHASE_LOUDNESS,
             )
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, CheckState())
@@ -138,8 +146,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         addLyrics: Boolean,
         addCover: Boolean = false,
         releaseGroupId: String? = null,
+        normalize: Boolean = false,
     ) = work("Couldn't fix ${song.fileName}") {
-        val done = repo.apply(song, names, writeTags, rename, addLyrics, addCover, releaseGroupId)
+        val done = repo.apply(song, names, writeTags, rename, addLyrics, addCover, releaseGroupId, normalize)
         val what = if (writeTags || rename) "Fixed: ${names.artist} - ${names.title}" else song.fileName
         messageSongId = done.song.id
         _message.value = what + when (done.lyrics) {
@@ -153,7 +162,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             SongRepository.LyricsOutcome.NOT_ONLINE -> " · no cover found"
             SongRepository.LyricsOutcome.OFFLINE -> " · cover site unreachable"
             else -> ""
+        } + volumeNote(done.volume)
+    }
+
+    private fun volumeNote(v: SongRepository.LyricsOutcome) = when (v) {
+        SongRepository.LyricsOutcome.ADDED -> " · volume tagged"
+        SongRepository.LyricsOutcome.ALREADY_THERE -> " · it already had volume tags"
+        SongRepository.LyricsOutcome.NOT_ONLINE -> " · volume couldn't be measured"
+        else -> ""
+    }
+
+    /** Songs measured that don't have ReplayGain tags yet. */
+    val toNormalize: StateFlow<Int> = repo.songs.map { repo.needNormalizing(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    /** Writes ReplayGain tags into every measured song that doesn't have them. */
+    fun normalizeAll() = work("Normalizing stopped") {
+        var added = 0
+        var kept = 0
+        var failed = 0
+        for (song in repo.needNormalizing(songs.value)) {
+            try {
+                when (repo.normalize(song).volume) {
+                    SongRepository.LyricsOutcome.ADDED -> added++
+                    SongRepository.LyricsOutcome.ALREADY_THERE -> kept++
+                    else -> failed++
+                }
+            } catch (e: Exception) {
+                failed++
+            }
         }
+        _message.value = "Volume tagged in $added songs" + (if (kept > 0) ", $kept had tags already" else "") + if (failed > 0) ", $failed couldn't be changed" else ""
+    }
+
+    fun normalize(song: Song) = work("Couldn't tag the volume") {
+        val done = repo.normalize(song)
+        messageSongId = done.song.id
+        _message.value = song.fileName + volumeNote(done.volume)
+    }
+
+    /** Measures again and replaces the song's ReplayGain tags. */
+    fun remeasure(song: Song) = work("Couldn't measure it") {
+        val done = repo.remeasure(song)
+        messageSongId = done.song.id
+        _message.value = done.song.loudnessLufs?.let { "Measured ${loudnessText(it)}" + volumeNote(done.volume) } ?: "The song couldn't be measured"
     }
 
     fun addCover(song: Song) = work("Couldn't add the cover") {
@@ -180,7 +231,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         for ((song, c) in repo.sureOnes(songs.value)) {
             try {
                 val names = NewNames(c.title, c.artist, c.album.orEmpty(), c.genre.orEmpty(), c.year?.toString().orEmpty())
-                val done = repo.apply(song, names, s.writeTags && song.extension in SongWriter.TAGGABLE, s.renameFiles, s.addLyrics, s.addCover, c.releaseGroupId)
+                val done = repo.apply(song, names, s.writeTags && song.extension in SongWriter.TAGGABLE, s.renameFiles, s.addLyrics, s.addCover, c.releaseGroupId, s.normalize)
                 if (done.lyrics == SongRepository.LyricsOutcome.ADDED) lyrics++
                 fixed++
             } catch (e: Exception) {

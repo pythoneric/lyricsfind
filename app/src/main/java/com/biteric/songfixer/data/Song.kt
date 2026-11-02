@@ -68,6 +68,16 @@ data class Song(
     val lyricsInFile: Boolean? = null,
     /** The file has a cover picture. Null = not known. */
     val hasCover: Boolean? = null,
+    /** Integrated loudness (BS.1770 / EBU R128), LUFS; null = not measured or silent. */
+    val loudnessLufs: Double? = null,
+    /** ReplayGain 2.0 track gain, dB: −18 − [loudnessLufs]. */
+    val trackGainDb: Double? = null,
+    /** True peak, linear (1.0 = full scale). */
+    val truePeak: Double? = null,
+    /** The loudness measurement ran (also when it failed), so it isn't tried again by itself. */
+    val loudnessChecked: Boolean = false,
+    /** The file has ReplayGain tags: written by the app or already there. Null = not known. */
+    val replayGainInFile: Boolean? = null,
 ) {
     val best: Candidate? get() = candidates.firstOrNull()
     val extension: String get() = fileName.substringAfterLast('.', "").lowercase()
