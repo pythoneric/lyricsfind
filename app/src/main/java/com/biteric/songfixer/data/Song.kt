@@ -59,6 +59,10 @@ data class Song(
     val artist: String? = null,
     val album: String? = null,
     val genre: String? = null,
+    /** The year in the file's tags; null = none (or not read yet, see [yearRead]). */
+    val year: Int? = null,
+    /** [year] was read from the file (songs checked before years were kept get it read once). */
+    val yearRead: Boolean = false,
     val status: SongStatus = SongStatus.NEW,
     /** Best first. */
     val candidates: List<Candidate> = emptyList(),

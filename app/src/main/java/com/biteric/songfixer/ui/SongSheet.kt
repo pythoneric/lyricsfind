@@ -44,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.biteric.songfixer.data.Candidate
 import com.biteric.songfixer.data.MatchSource
@@ -99,6 +100,7 @@ fun SongSheet(
             Field("Artist", song.artist)
             Field("Album", song.album)
             Field("Genre", song.genre)
+            Field("Year", song.year?.toString() ?: if (!song.yearRead && song.status != SongStatus.NEW) "not read yet" else null)
             Field(
                 "Volume",
                 loudnessSummary(song)
@@ -170,12 +172,24 @@ fun SongSheet(
             var artist by remember(song.id, candidate) { mutableStateOf(candidate?.artist ?: song.artist.orEmpty()) }
             var album by remember(song.id, candidate) { mutableStateOf(candidate?.album ?: song.album.orEmpty()) }
             var genre by remember(song.id, candidate) { mutableStateOf(candidate?.genre ?: song.genre.orEmpty()) }
+            var year by remember(song.id, candidate) { mutableStateOf(startYear(candidate, song)) }
+            val yearProblem = yearProblem(year)
             var writeTags by remember(song.id) { mutableStateOf(settings.writeTags && song.extension in SongWriter.TAGGABLE) }
             var rename by remember(song.id) { mutableStateOf(settings.renameFiles) }
             Edit("Title", title) { title = it }
             Edit("Artist", artist) { artist = it }
             Edit("Album", album) { album = it }
             Edit("Genre", genre) { genre = it }
+            OutlinedTextField(
+                year,
+                { year = it.filter(Char::isDigit).take(4) },
+                Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                label = { Text("Year") },
+                singleLine = true,
+                isError = yearProblem != null,
+                supportingText = yearProblem?.let { { Text(it) } },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
             CheckRow(
                 "Write tags into the file",
                 if (song.extension in SongWriter.TAGGABLE) null else ".${song.extension} files can't be tagged here",
@@ -243,11 +257,10 @@ fun SongSheet(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = {
-                        val year = candidate?.year?.takeIf { candidate.title == title && candidate.artist == artist }?.toString().orEmpty()
                         val rgId = candidate?.releaseGroupId?.takeIf { candidate.album == album }
-                        onApply(NewNames(title, artist, album, genre, year), writeTags, rename, addLyrics, addCover, rgId, normalize)
+                        onApply(NewNames(title, artist, album, genre, year.trim()), writeTags, rename, addLyrics, addCover, rgId, normalize)
                     },
-                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && (writeTags || rename || addLyrics || addCover || normalize),
+                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && yearProblem == null && (writeTags || rename || addLyrics || addCover || normalize),
                 ) { Text("Fix") }
                 if (song.status != SongStatus.KEPT && song.status != SongStatus.FIXED) TextButton(onClick = onKeep) { Text("Keep as is") }
                 TextButton(onClick = onRecheck) { Text("Check again") }

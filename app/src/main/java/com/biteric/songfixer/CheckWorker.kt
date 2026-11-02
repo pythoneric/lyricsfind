@@ -41,6 +41,8 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         } catch (e: AcoustIdKeyException) {
             return Result.failure(workDataOf(KEY_ERROR to (e.message ?: "AcoustID key not accepted")))
         }
+        // Songs checked before years were kept: read their year from the file (quick, no lookups).
+        app.repository.readYears()
         // Then loudness, one whole song at a time (for volume normalization).
         if (app.settings.current.normalize) {
             val toMeasure = app.repository.unmeasuredCount()

@@ -71,6 +71,30 @@ class SongRepository(
     suspend fun uncheckedCount() = dao.uncheckedCount()
 
     /**
+     * Reads the year from the files of songs checked before years were kept (no lookups). A song
+     * named right whose file has no year, while its match knows one, becomes something to fix;
+     * other statuses (fixed, kept, suggested…) stay as they are.
+     */
+    suspend fun readYears() {
+        for (song in dao.yearNotRead()) {
+            val year = try {
+                folder.readTags(Uri.parse(song.uri)).year
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                song.year
+            }
+            val status = if (song.status == SongStatus.OK) {
+                Verdict.status(song.title, song.artist, song.album, song.genre, song.candidates, year = year)
+                    .takeIf { it == SongStatus.SUGGESTED } ?: SongStatus.OK
+            } else {
+                song.status
+            }
+            dao.update(song.copy(year = year, yearRead = true, status = status))
+        }
+    }
+
+    /**
      * Checks the next unchecked song; false when there are none left.
      * Throws [AcoustIdKeyException] when the key is refused (the song stays unchecked).
      */
@@ -112,7 +136,7 @@ class SongRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return song.copy(title = tags.title, artist = tags.artist, album = tags.album, genre = tags.genre, durationMs = tags.durationMs, hasCover = tags.hasCover,
+            return song.copy(title = tags.title, artist = tags.artist, album = tags.album, genre = tags.genre, year = tags.year, yearRead = true, durationMs = tags.durationMs, hasCover = tags.hasCover,
                 status = SongStatus.FAILED, note = "Check failed: ${e.message}")
         }
         return song.copy(
@@ -120,8 +144,10 @@ class SongRepository(
             artist = tags.artist,
             album = tags.album,
             genre = tags.genre,
+            year = tags.year,
+            yearRead = true,
             durationMs = tags.durationMs, hasCover = tags.hasCover,
-            status = Verdict.status(tags.title, tags.artist, tags.album, tags.genre, result.candidates),
+            status = Verdict.status(tags.title, tags.artist, tags.album, tags.genre, result.candidates, year = tags.year),
             candidates = result.candidates,
             lyricsFound = result.lyricsFound,
             note = result.note ?: note,
@@ -251,6 +277,8 @@ class SongRepository(
             artist = if (writeTags) names.artist.ifBlank { song.artist } else song.artist,
             album = if (writeTags) names.album.ifBlank { song.album } else song.album,
             genre = if (writeTags) names.genre.ifBlank { song.genre } else song.genre,
+            year = if (writeTags) names.year.trim().toIntOrNull() ?: song.year else song.year,
+            yearRead = writeTags || song.yearRead,
             // Only lyrics or a cover added: the names weren't touched, so the status stays (an
             // unchecked song stays unchecked, one that was already right stays right).
             status = if (!writeTags && !rename) song.status else SongStatus.FIXED,

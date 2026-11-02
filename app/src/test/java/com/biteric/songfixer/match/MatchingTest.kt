@@ -83,6 +83,20 @@ class MatchingTest {
     }
 
     @Test
+    fun aMissingYearIsAGapToFill() {
+        val withYear = c("Hello", "Adele", "25", "Pop").copy(year = 2015)
+        // The file has no year, the match knows one: something to fix.
+        assertEquals(SongStatus.SUGGESTED, Verdict.status("Hello", "Adele", "25", "Pop", withYear))
+        // The file has one: right, even when it isn't the match's (remasters, compilations).
+        assertEquals(SongStatus.OK, Verdict.status("Hello", "Adele", "25", "Pop", withYear, year = 2015))
+        assertEquals(SongStatus.OK, Verdict.status("Hello", "Adele", "25", "Pop", withYear, year = 2021))
+        // Neither knows one: nothing to fill.
+        assertEquals(SongStatus.OK, Verdict.status("Hello", "Adele", "25", "Pop", c("Hello", "Adele", "25", "Pop")))
+        // Not found stays not found, year or not.
+        assertEquals(SongStatus.NOT_FOUND, Verdict.status("x", "y", null, null, c("Hello", "Adele", score = 0.5).copy(year = 2015)))
+    }
+
+    @Test
     fun aVersionOfAKnownSongIsNamedRight() {
         // The club mix (7 min) when only the 4-minute original is known: names right as they are.
         val original = c("Panic Room", "Au/Ra", score = 0.5)
