@@ -148,7 +148,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         releaseGroupId: String? = null,
         normalize: Boolean = false,
     ) = work("Couldn't fix ${song.fileName}") {
-        val done = repo.apply(song, names, writeTags, rename, addLyrics, addCover, releaseGroupId, normalize)
+        // From the sheet, where both covers are shown: a ticked box means the new one is wanted.
+        val done = repo.apply(song, names, writeTags, rename, addLyrics, addCover, releaseGroupId, normalize, replaceCover = addCover)
         val what = if (writeTags || rename) "Fixed: ${names.artist} - ${names.title}" else song.fileName
         messageSongId = done.song.id
         _message.value = what + when (done.lyrics) {
@@ -157,12 +158,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             SongRepository.LyricsOutcome.NOT_ONLINE -> " · no lyrics online for it"
             SongRepository.LyricsOutcome.OFFLINE -> " · lyrics site unreachable, try again later"
             SongRepository.LyricsOutcome.NOT_ASKED -> ""
-        } + when (done.cover) {
-            SongRepository.LyricsOutcome.ADDED -> " · cover added"
-            SongRepository.LyricsOutcome.NOT_ONLINE -> " · no cover found"
-            SongRepository.LyricsOutcome.OFFLINE -> " · cover site unreachable"
-            else -> ""
-        } + volumeNote(done.volume)
+        } + coverNote(done.cover, hadCover = song.hasCover == true) + volumeNote(done.volume)
     }
 
     private fun volumeNote(v: SongRepository.LyricsOutcome) = when (v) {
@@ -207,15 +203,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _message.value = done.song.loudnessLufs?.let { "Measured ${loudnessText(it)}" + volumeNote(done.volume) } ?: "The song couldn't be measured"
     }
 
+    /** "Add cover only" / "Replace cover only" in the sheet (the old and new covers are on screen). */
     fun addCover(song: Song) = work("Couldn't add the cover") {
-        val done = repo.addCover(song)
+        val done = repo.addCover(song, replace = true)
         messageSongId = done.song.id
-        _message.value = when (done.cover) {
-            SongRepository.LyricsOutcome.ADDED -> "Cover added"
-            SongRepository.LyricsOutcome.ALREADY_THERE -> "This song already has a cover"
-            SongRepository.LyricsOutcome.NOT_ONLINE -> "No cover found for its album"
-            else -> "The cover site can't be reached, try again later"
-        }
+        _message.value = coverOnlyMessage(done.cover, hadCover = song.hasCover == true)
     }
 
     /** The URL of a small preview of the cover a fix would add; null when the album isn't known. */

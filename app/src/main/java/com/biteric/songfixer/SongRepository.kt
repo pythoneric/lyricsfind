@@ -155,7 +155,8 @@ class SongRepository(
      * Writes [names] into the song's tags, renames it to "Artist - Title" and/or adds its lyrics
      * (looked up under the new names): into the lyrics tag, and as a .lrc file when the settings
      * ask for it or the format has no lyrics tag. With [addCover], the album's front cover from
-     * the Cover Art Archive goes in too ([releaseGroupId] = the chosen match's album, if known).
+     * the Cover Art Archive goes in too ([releaseGroupId] = the chosen match's album, if known);
+     * a cover already in the file stays unless [replaceCover] (the user saw both and kept the new one).
      */
     suspend fun apply(
         song: Song,
@@ -167,6 +168,7 @@ class SongRepository(
         releaseGroupId: String? = null,
         normalize: Boolean = false,
         replaceReplayGain: Boolean = false,
+        replaceCover: Boolean = false,
     ): Applied {
         var uri = Uri.parse(song.uri)
         var fileName = song.fileName
@@ -189,7 +191,7 @@ class SongRepository(
         // A cover only goes into the file's tags (there's no sidecar for it here).
         var coverOutcome = LyricsOutcome.NOT_ASKED
         var cover: CoverImage? = null
-        if (addCover && canEmbed && song.hasCover != true) {
+        if (addCover && canEmbed && (song.hasCover != true || replaceCover)) {
             val album = names.album.ifBlank { song.album.orEmpty() }
             coverOutcome = try {
                 cover = coverFinder.find(releaseGroupId, album, artist)
@@ -217,7 +219,7 @@ class SongRepository(
         if (writeTags || ((lyrics != null || cover != null || gain != null) && canEmbed)) {
             val written = writer.writeTags(
                 uri, song.extension, if (writeTags) names else NewNames("", "", "", ""), lyrics.takeIf { canEmbed }, cover = cover,
-                replayGain = gain, replaceReplayGain = replaceReplayGain,
+                replaceCover = replaceCover, replayGain = gain, replaceReplayGain = replaceReplayGain,
             )
             embedded = written.lyrics
             volumeOutcome = when (written.replayGain) {
@@ -327,9 +329,12 @@ class SongRepository(
     suspend fun remeasure(song: Song): Applied =
         apply(song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = false, normalize = true, replaceReplayGain = true)
 
-    /** Adds the album cover only, names untouched. */
-    suspend fun addCover(song: Song): Applied =
-        apply(song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = false, addCover = true, releaseGroupId = song.best?.releaseGroupId)
+    /** Adds the album cover only, names untouched; with [replace], in place of the one in the file. */
+    suspend fun addCover(song: Song, replace: Boolean = false): Applied =
+        apply(
+            song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = false, addCover = true,
+            releaseGroupId = song.best?.releaseGroupId, replaceCover = replace,
+        )
 
     /** The preview URL of the cover a match would add, for the song sheet (null when its album isn't known). */
     suspend fun coverPreview(releaseGroupId: String?, album: String?, artist: String?): String? =
