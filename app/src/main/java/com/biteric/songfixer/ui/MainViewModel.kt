@@ -130,8 +130,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (found.candidates.isEmpty()) _message.value = "Nothing found for \"$query\""
     }
 
-    fun apply(song: Song, names: NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean) = work("Couldn't fix ${song.fileName}") {
-        val done = repo.apply(song, names, writeTags, rename, addLyrics)
+    fun apply(
+        song: Song,
+        names: NewNames,
+        writeTags: Boolean,
+        rename: Boolean,
+        addLyrics: Boolean,
+        addCover: Boolean = false,
+        releaseGroupId: String? = null,
+    ) = work("Couldn't fix ${song.fileName}") {
+        val done = repo.apply(song, names, writeTags, rename, addLyrics, addCover, releaseGroupId)
         val what = if (writeTags || rename) "Fixed: ${names.artist} - ${names.title}" else song.fileName
         messageSongId = done.song.id
         _message.value = what + when (done.lyrics) {
@@ -140,8 +148,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             SongRepository.LyricsOutcome.NOT_ONLINE -> " · no lyrics online for it"
             SongRepository.LyricsOutcome.OFFLINE -> " · lyrics site unreachable, try again later"
             SongRepository.LyricsOutcome.NOT_ASKED -> ""
+        } + when (done.cover) {
+            SongRepository.LyricsOutcome.ADDED -> " · cover added"
+            SongRepository.LyricsOutcome.NOT_ONLINE -> " · no cover found"
+            SongRepository.LyricsOutcome.OFFLINE -> " · cover site unreachable"
+            else -> ""
         }
     }
+
+    fun addCover(song: Song) = work("Couldn't add the cover") {
+        val done = repo.addCover(song)
+        messageSongId = done.song.id
+        _message.value = when (done.cover) {
+            SongRepository.LyricsOutcome.ADDED -> "Cover added"
+            SongRepository.LyricsOutcome.ALREADY_THERE -> "This song already has a cover"
+            SongRepository.LyricsOutcome.NOT_ONLINE -> "No cover found for its album"
+            else -> "The cover site can't be reached, try again later"
+        }
+    }
+
+    /** The URL of a small preview of the cover a fix would add; null when the album isn't known. */
+    suspend fun coverPreview(releaseGroupId: String?, album: String?, artist: String?): String? =
+        runCatching { repo.coverPreview(releaseGroupId, album, artist) }.getOrNull()
 
     /** Applies every sure suggestion with the default options. */
     fun applyAllSure() = work("Fixing stopped") {
@@ -152,7 +180,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         for ((song, c) in repo.sureOnes(songs.value)) {
             try {
                 val names = NewNames(c.title, c.artist, c.album.orEmpty(), c.genre.orEmpty(), c.year?.toString().orEmpty())
-                val done = repo.apply(song, names, s.writeTags && song.extension in SongWriter.TAGGABLE, s.renameFiles, s.addLyrics)
+                val done = repo.apply(song, names, s.writeTags && song.extension in SongWriter.TAGGABLE, s.renameFiles, s.addLyrics, s.addCover, c.releaseGroupId)
                 if (done.lyrics == SongRepository.LyricsOutcome.ADDED) lyrics++
                 fixed++
             } catch (e: Exception) {

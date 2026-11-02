@@ -84,8 +84,9 @@ fun SettingsScreen(
             SwitchRow("Rename the file to \"Artist - Title\"", settings.renameFiles) { v -> onChange { it.copy(renameFiles = v) } }
             SwitchRow("Add the lyrics (from LRCLIB, synced when available) into the file", settings.addLyrics) { v -> onChange { it.copy(addLyrics = v) } }
             SwitchRow("Also save lyrics as a .lrc file next to the song", settings.lrcFiles) { v -> onChange { it.copy(lrcFiles = v) } }
+            SwitchRow("Add the album cover (from the Cover Art Archive) to songs without one", settings.addCover) { v -> onChange { it.copy(addCover = v) } }
             Text(
-                "Lyrics already in a file are never replaced. Formats without a lyrics tag (e.g. .opus) always get a .lrc file.",
+                "Lyrics and covers already in a file are never replaced. Formats without a lyrics tag (e.g. .opus) always get a .lrc file.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -104,7 +105,7 @@ fun SettingsScreen(
             Text(
                 "Song Fixer ${BuildConfig.VERSION_NAME}\n\n" +
                     "Song recognition: AcoustID (acoustid.org) and its Chromaprint fingerprint (MIT; resampler from FFmpeg, LGPL 2.1). " +
-                    "Song data: MusicBrainz (musicbrainz.org, CC0). Lyrics check: LRCLIB (lrclib.net). " +
+                    "Song data: MusicBrainz (musicbrainz.org, CC0). Covers: Cover Art Archive (coverartarchive.org). Lyrics: LRCLIB (lrclib.net). " +
                     "Tag writing: jaudiotagger (LGPL 2.1).\n\n" +
                     "Song Fixer sends each song's fingerprint and length to AcoustID, and song names to MusicBrainz and LRCLIB. " +
                     "It never uploads your music files.",

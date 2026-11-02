@@ -72,15 +72,43 @@ class DeviceTest {
         val f = copyAsset("test.mp3")
         val writer = SongWriter(appContext)
         val lrc = "[00:01.00] First line\n[00:04.50] Second line"
-        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("Hello", "Adele", "", ""), lrc))
+        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("Hello", "Adele", "", ""), lrc).lyrics)
         assertEquals(lrc, AudioFileIO.read(f).tag.getFirst(FieldKey.LYRICS))
         // Lyrics only, names untouched.
-        assertEquals(SongWriter.EmbedResult.HAD_LYRICS, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), "other"))
+        assertEquals(SongWriter.EmbedResult.KEPT_EXISTING, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), "other").lyrics)
         assertEquals(lrc, AudioFileIO.read(f).tag.getFirst(FieldKey.LYRICS))
         assertEquals("Hello", AudioFileIO.read(f).tag.getFirst(FieldKey.TITLE))
         // Lyrics the user picked or pasted do replace them.
-        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), "pasted", replaceLyrics = true))
+        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), "pasted", replaceLyrics = true).lyrics)
         assertEquals("pasted", AudioFileIO.read(f).tag.getFirst(FieldKey.LYRICS))
+        f.delete()
+    }
+
+    /** A plain 300x300 JPEG, standing in for a downloaded cover. */
+    private fun testCover(color: Int): com.biteric.songfixer.online.CoverImage {
+        val bmp = android.graphics.Bitmap.createBitmap(300, 300, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(color) }
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+        return com.biteric.songfixer.online.CoverImage(out.toByteArray(), "image/jpeg")
+    }
+
+    @Test
+    fun addsACoverButNeverReplacesOne() = runTest {
+        val f = copyAsset("test.mp3")
+        val writer = SongWriter(appContext)
+        val red = testCover(android.graphics.Color.RED)
+        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("Hello", "Adele", "", ""), cover = red).cover)
+        // Android (and so BitEric and other players) sees it.
+        val r = android.media.MediaMetadataRetriever()
+        r.setDataSource(f.absolutePath)
+        val picture = r.embeddedPicture
+        r.release()
+        assertTrue(picture != null && picture.contentEquals(red.bytes))
+        // A second cover doesn't replace the first.
+        assertEquals(SongWriter.EmbedResult.KEPT_EXISTING, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), cover = testCover(android.graphics.Color.BLUE)).cover)
+        assertTrue(AudioFileIO.read(f).tag.firstArtwork.binaryData.contentEquals(red.bytes))
+        assertEquals("Hello", AudioFileIO.read(f).tag.getFirst(FieldKey.TITLE))
+        assertEquals(10, AudioFileIO.read(f).audioHeader.trackLength)
         f.delete()
     }
 

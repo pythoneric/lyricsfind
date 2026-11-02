@@ -6,7 +6,9 @@ import com.biteric.songfixer.data.SongDatabase
 import com.biteric.songfixer.files.MusicFolder
 import com.biteric.songfixer.files.SongWriter
 import com.biteric.songfixer.fingerprint.AudioFingerprinter
+import com.biteric.songfixer.match.CoverFinder
 import com.biteric.songfixer.match.Identifier
+import com.biteric.songfixer.online.CoverArtApi
 import com.biteric.songfixer.match.LyricsFinder
 import com.biteric.songfixer.online.AcoustIdApi
 import com.biteric.songfixer.online.Http
@@ -25,9 +27,12 @@ class SongFixerApp : Application() {
         // MusicBrainz asks every app to name itself with a contact.
         val userAgent = "SongFixer/${BuildConfig.VERSION_NAME} ( ${Http.USER_AGENT_CONTACT} )"
         val lrclib = LrclibApi(userAgent = userAgent)
+        // One MusicBrainz client, so its one-request-a-second limit holds across lookups.
+        val musicBrainz = MusicBrainzApi(userAgent = userAgent)
+        val coverArt = CoverArtApi(userAgent = userAgent)
         val identifier = Identifier(
             AcoustIdApi(userAgent = userAgent),
-            MusicBrainzApi(userAgent = userAgent),
+            musicBrainz,
             lrclib,
         )
         repository = SongRepository(
@@ -39,6 +44,8 @@ class SongFixerApp : Application() {
             settings,
             LyricsFinder(lrclib),
             lrclib,
+            CoverFinder(musicBrainz, coverArt),
+            coverArt,
         )
     }
 }

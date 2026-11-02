@@ -12,7 +12,7 @@ import kotlinx.coroutines.withContext
 data class FoundFile(val uri: Uri, val name: String, val folder: String, val size: Long, val modified: Long)
 
 /** Tags as Android reads them, plus the length. */
-data class ReadTags(val title: String?, val artist: String?, val album: String?, val genre: String?, val durationMs: Long?)
+data class ReadTags(val title: String?, val artist: String?, val album: String?, val genre: String?, val durationMs: Long?, val hasCover: Boolean = false)
 
 /** The folder the user picked (Storage Access Framework tree): lists songs and reads their tags. */
 class MusicFolder(private val context: Context) {
@@ -53,6 +53,7 @@ class MusicFolder(private val context: Context) {
                 album = get(MediaMetadataRetriever.METADATA_KEY_ALBUM),
                 genre = get(MediaMetadataRetriever.METADATA_KEY_GENRE)?.let(::genreName),
                 durationMs = get(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull(),
+                hasCover = r.embeddedPicture != null,
             )
         } finally {
             r.release()

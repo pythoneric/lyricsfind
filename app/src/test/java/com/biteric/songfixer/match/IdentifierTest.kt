@@ -41,7 +41,7 @@ class IdentifierTest {
           {"id":"rec-comp","title":"Hello","duration":295,"artists":[{"id":"art-adele","name":"Adele"}],
            "releasegroups":[{"title":"Now 92","type":"Album","secondarytypes":["Compilation"]}]},
           {"id":"rec-1","title":"Hello","duration":295,"artists":[{"id":"art-adele","name":"Adele"}],
-           "releasegroups":[{"title":"25","type":"Album"}]},
+           "releasegroups":[{"id":"rg-25","title":"25","type":"Album"}]},
           {"id":"rec-x","title":"Hello (karaoke)","duration":296,"artists":[{"id":"k","name":"Karaoke Stars"}]}
         ]}]}
     """.trimIndent()
@@ -59,6 +59,7 @@ class IdentifierTest {
         assertEquals("Hello", best.title)
         assertEquals("Adele", best.artist)
         assertEquals("25", best.album)
+        assertEquals("rg-25", best.releaseGroupId)
         assertEquals("Pop", best.genre)
         assertEquals(MatchSource.SOUND, best.source)
         assertTrue(best.sure)
@@ -83,7 +84,7 @@ class IdentifierTest {
         routes["/ws/2/recording"] = {
             200 to """{"recordings":[
               {"id":"r2","score":100,"title":"Hello","length":295000,"artist-credit":[{"name":"Adele","artist":{"id":"art-adele"}}],
-               "first-release-date":"2015-10-23","releases":[{"title":"25","status":"Official","release-group":{"primary-type":"Album"}}]},
+               "first-release-date":"2015-10-23","releases":[{"title":"25","status":"Official","release-group":{"id":"rg-25","primary-type":"Album"}}]},
               {"id":"r3","score":90,"title":"Hello","length":250000,"artist-credit":[{"name":"Lionel Richie"}]}
             ]}"""
         }
@@ -94,6 +95,7 @@ class IdentifierTest {
         assertEquals("Hello", best.title)
         assertEquals("Adele", best.artist)
         assertEquals("25", best.album)
+        assertEquals("rg-25", best.releaseGroupId)
         assertEquals(2015, best.year)
         assertEquals(MatchSource.NAME, best.source)
         assertTrue(best.sure)

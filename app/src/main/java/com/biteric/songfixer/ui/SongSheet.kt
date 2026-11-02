@@ -59,8 +59,11 @@ fun SongSheet(
     settings: SettingsState,
     busy: Boolean,
     onDismiss: () -> Unit,
-    onApply: (NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean) -> Unit,
+    onApply: (NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean, addCover: Boolean, releaseGroupId: String?) -> Unit,
     onAddLyrics: () -> Unit,
+    onAddCover: () -> Unit,
+    /** The preview URL of the cover a fix would add (release group, album, artist). */
+    coverPreview: suspend (String?, String, String) -> String?,
     onFindLyrics: () -> Unit,
     onPasteLyrics: () -> Unit,
     onBrowseLyrics: (LyricsSite) -> Unit,
@@ -182,15 +185,41 @@ fun SongSheet(
                 },
                 addLyrics,
             ) { addLyrics = it }
+            // The cover the fix would add, from the chosen match's album (or a search by album name).
+            val canCover = song.extension in SongWriter.TAGGABLE && song.hasCover != true
+            var addCover by remember(song.id) { mutableStateOf(settings.addCover && canCover) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    CheckRow(
+                        "Add cover art",
+                        when {
+                            song.hasCover == true -> "This song has a cover already"
+                            song.extension !in SongWriter.TAGGABLE -> ".${song.extension} files can't hold a cover here"
+                            else -> "The album's front cover, from the Cover Art Archive"
+                        },
+                        addCover,
+                        enabled = canCover,
+                    ) { addCover = it }
+                }
+                if (canCover) {
+                    val rgId = candidate?.releaseGroupId?.takeIf { candidate.album == album }
+                    CoverPreview(key = listOf(rgId, album, artist), findUrl = {
+                        // Typing in the album box: wait for a pause before searching.
+                        if (rgId == null) kotlinx.coroutines.delay(700)
+                        coverPreview(rgId, album, artist)
+                    }, size = 72.dp)
+                }
+            }
 
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = {
                         val year = candidate?.year?.takeIf { candidate.title == title && candidate.artist == artist }?.toString().orEmpty()
-                        onApply(NewNames(title, artist, album, genre, year), writeTags, rename, addLyrics)
+                        val rgId = candidate?.releaseGroupId?.takeIf { candidate.album == album }
+                        onApply(NewNames(title, artist, album, genre, year), writeTags, rename, addLyrics, addCover, rgId)
                     },
-                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && (writeTags || rename || addLyrics),
+                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && (writeTags || rename || addLyrics || addCover),
                 ) { Text("Fix") }
                 if (song.status != SongStatus.KEPT && song.status != SongStatus.FIXED) TextButton(onClick = onKeep) { Text("Keep as is") }
                 TextButton(onClick = onRecheck) { Text("Check again") }
@@ -198,6 +227,11 @@ fun SongSheet(
             // Names already right: just the lyrics, nothing else touched.
             if ((song.status == SongStatus.OK || song.status == SongStatus.FIXED || song.status == SongStatus.KEPT) && song.lyricsInFile != true) {
                 TextButton(onClick = onAddLyrics, enabled = !busy) { Text("Add lyrics only") }
+            }
+            if ((song.status == SongStatus.OK || song.status == SongStatus.FIXED || song.status == SongStatus.KEPT) &&
+                song.hasCover != true && song.extension in SongWriter.TAGGABLE
+            ) {
+                TextButton(onClick = onAddCover, enabled = !busy) { Text("Add cover only") }
             }
             Spacer(Modifier.height(24.dp))
         }

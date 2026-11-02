@@ -110,10 +110,12 @@ class Identifier(
                 val agree = guesses.maxOfOrNull { nameScore(g.title, g.artist, it) } ?: 0.0
                 val rank = g.score + 0.04 * agree + 0.01 * min(g.count, 5)
                 val durationOk = song.durationSec == null || g.durationSec == null || abs(song.durationSec - g.durationSec) <= 10
+                val albumGroup = pickAlbumGroup(g.groups, song.album)
                 rank to Candidate(
                     title = g.title,
                     artist = g.artist,
-                    album = pickAlbum(g.groups, song.album),
+                    album = albumGroup?.title,
+                    releaseGroupId = albumGroup?.id,
                     durationSec = g.durationSec,
                     source = MatchSource.SOUND,
                     score = g.score,
@@ -146,10 +148,12 @@ class Identifier(
                 val onAlbum = rec.releases.any { it.status == "Official" && it.releaseGroup?.primaryType == "Album" && it.releaseGroup.secondaryTypes.isEmpty() }
                 val score = (scoreByName(rec.title, rec.artist, guess, len, durationSec) + if (onAlbum) 0.03 else 0.0)
                     .coerceAtMost(1.0) * (0.7 + 0.3 * (rec.score ?: 100) / 100.0)
+                val release = pickMbAlbum(rec.releases)
                 found += Candidate(
                     title = rec.title,
                     artist = rec.artist,
-                    album = pickMbAlbum(rec.releases),
+                    album = release?.title,
+                    releaseGroupId = release?.releaseGroup?.id,
                     year = rec.year,
                     durationSec = len,
                     source = MatchSource.NAME,
@@ -194,7 +198,7 @@ class Identifier(
             .map { same ->
                 val best = same.maxBy { it.score }
                 val mb = same.filter { it.recordingId != null }.maxByOrNull { it.score }
-                val merged = if (mb != null && best.recordingId == null) best.copy(album = mb.album ?: best.album, year = mb.year, recordingId = mb.recordingId, artistId = mb.artistId) else best
+                val merged = if (mb != null && best.recordingId == null) best.copy(album = mb.album ?: best.album, year = mb.year, recordingId = mb.recordingId, artistId = mb.artistId, releaseGroupId = mb.releaseGroupId) else best
                 val agreed = (merged.score + 0.01 * (minOf(same.size, 5) - 1)).coerceAtMost(1.0)
                 merged.copy(score = agreed, sure = agreed >= SURE_NAME_SCORE)
             }
@@ -264,20 +268,22 @@ class Identifier(
         }
 
         /** The original album over compilations and live releases; the user's album when it's one of them. */
-        fun pickAlbum(groups: List<AcoustIdReleaseGroup>, current: String?): String? {
+        fun pickAlbum(groups: List<AcoustIdReleaseGroup>, current: String?): String? = pickAlbumGroup(groups, current)?.title
+
+        fun pickAlbumGroup(groups: List<AcoustIdReleaseGroup>, current: String?): AcoustIdReleaseGroup? {
             val named = groups.filter { !it.title.isNullOrBlank() }
-            if (!current.isNullOrBlank()) named.firstOrNull { Text.same(it.title, current) }?.let { return it.title }
-            return (named.firstOrNull { it.type == "Album" && it.secondarytypes.isEmpty() }
+            if (!current.isNullOrBlank()) named.firstOrNull { Text.same(it.title, current) }?.let { return it }
+            return named.firstOrNull { it.type == "Album" && it.secondarytypes.isEmpty() }
                 ?: named.firstOrNull { (it.type == "Single" || it.type == "EP") && it.secondarytypes.isEmpty() }
                 ?: named.firstOrNull { "Compilation" !in it.secondarytypes }
-                ?: named.firstOrNull())?.title
+                ?: named.firstOrNull()
         }
 
-        private fun pickMbAlbum(releases: List<com.biteric.songfixer.online.MbRelease>): String? {
+        private fun pickMbAlbum(releases: List<com.biteric.songfixer.online.MbRelease>): com.biteric.songfixer.online.MbRelease? {
             val named = releases.filter { !it.title.isNullOrBlank() }
-            return (named.firstOrNull { it.releaseGroup?.primaryType == "Album" && it.releaseGroup.secondaryTypes.isEmpty() && it.status == "Official" }
+            return named.firstOrNull { it.releaseGroup?.primaryType == "Album" && it.releaseGroup.secondaryTypes.isEmpty() && it.status == "Official" }
                 ?: named.firstOrNull { it.releaseGroup?.secondaryTypes?.isEmpty() == true }
-                ?: named.firstOrNull())?.title
+                ?: named.firstOrNull()
         }
     }
 }

@@ -16,6 +16,9 @@ import com.biteric.songfixer.match.SongInfo
 import com.biteric.songfixer.match.Text
 import com.biteric.songfixer.match.Verdict
 import com.biteric.songfixer.online.AcoustIdKeyException
+import com.biteric.songfixer.match.CoverFinder
+import com.biteric.songfixer.online.CoverArtApi
+import com.biteric.songfixer.online.CoverImage
 import com.biteric.songfixer.online.LrclibApi
 import com.biteric.songfixer.online.LrclibTrack
 import kotlinx.coroutines.CancellationException
@@ -31,6 +34,8 @@ class SongRepository(
     private val settings: Settings,
     private val lyricsFinder: LyricsFinder,
     private val lrclib: LrclibApi,
+    private val coverFinder: CoverFinder,
+    private val coverArt: CoverArtApi,
 ) {
     val songs = dao.observeAll()
     val counts = dao.observeCounts()
@@ -99,7 +104,7 @@ class SongRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return song.copy(title = tags.title, artist = tags.artist, album = tags.album, genre = tags.genre, durationMs = tags.durationMs,
+            return song.copy(title = tags.title, artist = tags.artist, album = tags.album, genre = tags.genre, durationMs = tags.durationMs, hasCover = tags.hasCover,
                 status = SongStatus.FAILED, note = "Check failed: ${e.message}")
         }
         return song.copy(
@@ -107,7 +112,7 @@ class SongRepository(
             artist = tags.artist,
             album = tags.album,
             genre = tags.genre,
-            durationMs = tags.durationMs,
+            durationMs = tags.durationMs, hasCover = tags.hasCover,
             status = Verdict.status(tags.title, tags.artist, tags.album, tags.genre, result.candidates.firstOrNull()),
             candidates = result.candidates,
             lyricsFound = result.lyricsFound,
@@ -129,14 +134,24 @@ class SongRepository(
 
     enum class LyricsOutcome { ADDED, ALREADY_THERE, NOT_ONLINE, OFFLINE, NOT_ASKED }
 
-    class Applied(val song: Song, val lyrics: LyricsOutcome)
+    /** Same outcomes for the cover: ADDED, ALREADY_THERE, NOT_ONLINE (no album or no cover), OFFLINE, NOT_ASKED. */
+    class Applied(val song: Song, val lyrics: LyricsOutcome, val cover: LyricsOutcome = LyricsOutcome.NOT_ASKED)
 
     /**
      * Writes [names] into the song's tags, renames it to "Artist - Title" and/or adds its lyrics
      * (looked up under the new names): into the lyrics tag, and as a .lrc file when the settings
-     * ask for it or the format has no lyrics tag.
+     * ask for it or the format has no lyrics tag. With [addCover], the album's front cover from
+     * the Cover Art Archive goes in too ([releaseGroupId] = the chosen match's album, if known).
      */
-    suspend fun apply(song: Song, names: NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean): Applied {
+    suspend fun apply(
+        song: Song,
+        names: NewNames,
+        writeTags: Boolean,
+        rename: Boolean,
+        addLyrics: Boolean,
+        addCover: Boolean = false,
+        releaseGroupId: String? = null,
+    ): Applied {
         var uri = Uri.parse(song.uri)
         var fileName = song.fileName
         val title = names.title.ifBlank { song.title.orEmpty() }
@@ -155,11 +170,33 @@ class SongRepository(
             }
         }
         val canEmbed = song.extension in SongWriter.TAGGABLE
-        var embedded: SongWriter.EmbedResult? = null
-        if (writeTags || (lyrics != null && canEmbed)) {
-            embedded = writer.writeTags(uri, song.extension, if (writeTags) names else NewNames("", "", "", ""), lyrics.takeIf { canEmbed })
+        // A cover only goes into the file's tags (there's no sidecar for it here).
+        var coverOutcome = LyricsOutcome.NOT_ASKED
+        var cover: CoverImage? = null
+        if (addCover && canEmbed && song.hasCover != true) {
+            val album = names.album.ifBlank { song.album.orEmpty() }
+            coverOutcome = try {
+                cover = coverFinder.find(releaseGroupId, album, artist)
+                if (cover == null) LyricsOutcome.NOT_ONLINE else LyricsOutcome.ADDED
+            } catch (e: IOException) {
+                LyricsOutcome.OFFLINE
+            } catch (e: SerializationException) {
+                LyricsOutcome.OFFLINE
+            }
+        } else if (addCover && song.hasCover == true) {
+            coverOutcome = LyricsOutcome.ALREADY_THERE
         }
-        if (embedded == SongWriter.EmbedResult.HAD_LYRICS) outcome = LyricsOutcome.ALREADY_THERE
+        var embedded: SongWriter.EmbedResult? = null
+        if (writeTags || ((lyrics != null || cover != null) && canEmbed)) {
+            val written = writer.writeTags(uri, song.extension, if (writeTags) names else NewNames("", "", "", ""), lyrics.takeIf { canEmbed }, cover = cover)
+            embedded = written.lyrics
+            when (written.cover) {
+                SongWriter.EmbedResult.KEPT_EXISTING -> coverOutcome = LyricsOutcome.ALREADY_THERE
+                SongWriter.EmbedResult.UNSUPPORTED -> coverOutcome = LyricsOutcome.NOT_ONLINE
+                else -> {}
+            }
+        }
+        if (embedded == SongWriter.EmbedResult.KEPT_EXISTING) outcome = LyricsOutcome.ALREADY_THERE
         if (rename && names.artist.isNotBlank() && names.title.isNotBlank()) {
             val newName = SongWriter.fileName(names.artist, names.title, song.extension)
             uri = writer.rename(uri, fileName, newName)
@@ -176,19 +213,29 @@ class SongRepository(
             artist = if (writeTags) names.artist.ifBlank { song.artist } else song.artist,
             album = if (writeTags) names.album.ifBlank { song.album } else song.album,
             genre = if (writeTags) names.genre.ifBlank { song.genre } else song.genre,
-            // Lyrics-only on a song that was already right: it stays "already right".
-            status = if (!writeTags && !rename && song.status == SongStatus.OK) SongStatus.OK else SongStatus.FIXED,
+            // Only lyrics or a cover added: the names weren't touched, so the status stays (an
+            // unchecked song stays unchecked, one that was already right stays right).
+            status = if (!writeTags && !rename) song.status else SongStatus.FIXED,
             lyricsFound = when (outcome) {
                 LyricsOutcome.ADDED, LyricsOutcome.ALREADY_THERE -> true
                 LyricsOutcome.NOT_ONLINE -> false
                 else -> if (sameAsBest) song.lyricsFound else null
             },
             lyricsInFile = if (outcome == LyricsOutcome.ADDED || outcome == LyricsOutcome.ALREADY_THERE) true else song.lyricsInFile,
+            hasCover = if (coverOutcome == LyricsOutcome.ADDED || coverOutcome == LyricsOutcome.ALREADY_THERE) true else song.hasCover,
             note = null,
         )
         dao.update(fixed)
-        return Applied(fixed, outcome)
+        return Applied(fixed, outcome, coverOutcome)
     }
+
+    /** Adds the album cover only, names untouched. */
+    suspend fun addCover(song: Song): Applied =
+        apply(song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = false, addCover = true, releaseGroupId = song.best?.releaseGroupId)
+
+    /** The preview URL of the cover a match would add, for the song sheet (null when its album isn't known). */
+    suspend fun coverPreview(releaseGroupId: String?, album: String?, artist: String?): String? =
+        coverFinder.releaseGroup(releaseGroupId, album, artist)?.let(coverArt::previewUrl)
 
     /** Songs whose names are right and whose lyrics are online but not in the file yet. */
     fun needLyrics(songs: List<Song>): List<Song> =
@@ -202,7 +249,7 @@ class SongRepository(
      * tag (no tag written, or a format without a lyrics tag). Not when the file kept its own lyrics.
      */
     private fun wantsLrcFile(embedded: SongWriter.EmbedResult?) =
-        embedded != SongWriter.EmbedResult.HAD_LYRICS &&
+        embedded != SongWriter.EmbedResult.KEPT_EXISTING &&
             (settings.current.lrcFiles || embedded == null || embedded == SongWriter.EmbedResult.UNSUPPORTED)
 
     /**
@@ -219,7 +266,7 @@ class SongRepository(
     suspend fun saveLyrics(song: Song, text: String): Song {
         val uri = Uri.parse(song.uri)
         val embedded = if (song.extension in SongWriter.TAGGABLE) {
-            writer.writeTags(uri, song.extension, NewNames("", "", "", ""), text, replaceLyrics = true)
+            writer.writeTags(uri, song.extension, NewNames("", "", "", ""), text, replaceLyrics = true).lyrics
         } else {
             null
         }

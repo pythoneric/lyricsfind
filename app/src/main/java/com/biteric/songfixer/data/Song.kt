@@ -38,6 +38,8 @@ data class Candidate(
     val sure: Boolean = false,
     val recordingId: String? = null,
     val artistId: String? = null,
+    /** MusicBrainz release group of [album]: where its cover art is found. */
+    val releaseGroupId: String? = null,
 )
 
 /** A music file in the chosen folder, its tags as they are, and what the check found. */
@@ -64,6 +66,8 @@ data class Song(
     val note: String? = null,
     /** The file (or its .lrc) has lyrics: added by the app or already there. Null = not known. */
     val lyricsInFile: Boolean? = null,
+    /** The file has a cover picture. Null = not known. */
+    val hasCover: Boolean? = null,
 ) {
     val best: Candidate? get() = candidates.firstOrNull()
     val extension: String get() = fileName.substringAfterLast('.', "").lowercase()
