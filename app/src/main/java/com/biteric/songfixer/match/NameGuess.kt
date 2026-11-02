@@ -59,12 +59,21 @@ object NameGuesses {
         if (tagArtist != null && parts.isNotEmpty() && tagTitle == null) guesses += NameGuess(parts.last(), tagArtist)
         if (parts.size == 1 && usableTitle(parts[0])) guesses += NameGuess(parts[0], tagArtist)
         if (guesses.isEmpty() && usableTitle(noNumber)) guesses += NameGuess(noNumber, null)
-        // Last resort: the artist tag may be the wrong part (e.g. the title copied into it).
-        guesses.firstOrNull { it.artist != null }?.let { guesses += NameGuess(it.title, null) }
+        // Song databases name the song without its version or guests ("Common Emotion", not
+        // "Common Emotion ft. MNEK"): look the first guess up that way too, right after it.
+        guesses.firstOrNull()?.let { first ->
+            val plain = Text.baseTitle(first.title)
+            if (plain != first.title) guesses.add(1, NameGuess(plain, first.artist))
+        }
+        // Last resort, when the artist tag is plainly wrong (the title copied into it): the title alone.
+        if (tagArtist != null && tagTitle != null && Text.normalize(tagTitle).contains(Text.normalize(tagArtist))) {
+            guesses += NameGuess(Text.baseTitle(tagTitle), null)
+        }
 
         return guesses
             .filter { usableTitle(it.title) }
-            .distinctBy { Text.normalize(it.title) + "|" + Text.normalize(it.artist) }
+            // By the title as written: "Song ft. X" and "Song" are both worth a search.
+            .distinctBy { it.title.lowercase().trim() + "|" + Text.normalize(it.artist) }
             .take(4)
     }
 }

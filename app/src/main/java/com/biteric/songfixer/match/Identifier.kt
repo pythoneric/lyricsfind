@@ -183,7 +183,8 @@ class Identifier(
                 val artist = t.artistName ?: continue
                 val len = t.duration?.toInt()
                 val score = guesses.take(2).maxOf { scoreByName(title, artist, it, len, durationSec) }
-                found += Candidate(title, artist, t.albumName?.takeIf { it.isNotBlank() }, durationSec = len, source = MatchSource.NAME, score = score)
+                // No album from LRCLIB: its album names are typed by users ("RÜFÜS DU SOL Songs"); MusicBrainz's go in when merged below.
+                found += Candidate(title, artist, null, durationSec = len, source = MatchSource.NAME, score = score)
             }
         }
         // Nothing answered (offline?): that's not "not found", so the song can be checked again later.

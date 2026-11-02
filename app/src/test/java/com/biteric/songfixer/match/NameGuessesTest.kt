@@ -45,6 +45,22 @@ class NameGuessesTest {
     }
 
     @Test
+    fun alsoTheTitleWithoutVersionOrGuests() {
+        val ft = NameGuesses.from("Common Emotion ft. MNEK.mp3", "Common Emotion ft. MNEK", "Rudimental")
+        assertEquals(NameGuess("Common Emotion ft. MNEK", "Rudimental"), ft[0])
+        assertEquals(NameGuess("Common Emotion", "Rudimental"), ft[1])
+        val mix = NameGuesses.from("04 Panic Room (CamelPhat Club Mix).mp3", "Panic Room (CamelPhat Club Mix)", "Au/Ra")
+        assertEquals(NameGuess("Panic Room", "Au/Ra"), mix[1])
+    }
+
+    @Test
+    fun aRealArtistTagIsTrusted() {
+        // No title-only search, which finds other artists' songs of the same name.
+        val guesses = NameGuesses.from("Sexy M.F. (Extended Mix).mp3", "Sexy M.F. (Extended Mix)", "Jackie (IT), AVIV SAB")
+        assertTrue(guesses.all { it.artist != null })
+    }
+
+    @Test
     fun titleOnlyFileName() = assertEquals(NameGuess("Despacito", null), first("Despacito.mp3"))
 
     @Test

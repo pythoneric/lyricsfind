@@ -113,7 +113,7 @@ class SongRepository(
             album = tags.album,
             genre = tags.genre,
             durationMs = tags.durationMs, hasCover = tags.hasCover,
-            status = Verdict.status(tags.title, tags.artist, tags.album, tags.genre, result.candidates.firstOrNull()),
+            status = Verdict.status(tags.title, tags.artist, tags.album, tags.genre, result.candidates),
             candidates = result.candidates,
             lyricsFound = result.lyricsFound,
             note = result.note ?: note,
