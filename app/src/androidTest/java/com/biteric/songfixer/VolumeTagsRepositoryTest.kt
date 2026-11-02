@@ -4,23 +4,13 @@ import android.net.Uri
 import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.biteric.songfixer.data.Settings
 import com.biteric.songfixer.data.Song
 import com.biteric.songfixer.data.SongDatabase
-import com.biteric.songfixer.files.MusicFolder
 import com.biteric.songfixer.files.ReplayGainTags
 import com.biteric.songfixer.files.SongWriter
-import com.biteric.songfixer.fingerprint.AudioFingerprinter
 import com.biteric.songfixer.loudness.GainVerdict
 import com.biteric.songfixer.loudness.LoudnessAnalyzer
 import com.biteric.songfixer.loudness.ReplayGain
-import com.biteric.songfixer.match.CoverFinder
-import com.biteric.songfixer.match.Identifier
-import com.biteric.songfixer.match.LyricsFinder
-import com.biteric.songfixer.online.AcoustIdApi
-import com.biteric.songfixer.online.CoverArtApi
-import com.biteric.songfixer.online.LrclibApi
-import com.biteric.songfixer.online.MusicBrainzApi
 import kotlinx.coroutines.test.runTest
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.id3.AbstractID3v2Frame
@@ -54,17 +44,8 @@ class VolumeTagsRepositoryTest {
     @Before
     fun setUp() {
         db = Room.inMemoryDatabaseBuilder(appContext, SongDatabase::class.java).build()
-        // Nothing here goes online; the services point nowhere so a slip would fail, not reach out.
-        val nowhere = "http://127.0.0.1:9"
-        val ua = "SongFixerTest"
-        val lrclib = LrclibApi(nowhere, ua)
-        val coverArt = CoverArtApi(nowhere, ua)
-        val musicBrainz = MusicBrainzApi(nowhere, ua)
-        repo = SongRepository(
-            db.songs(), MusicFolder(appContext), AudioFingerprinter(appContext),
-            Identifier(AcoustIdApi(nowhere, ua), musicBrainz, lrclib), SongWriter(appContext), Settings(appContext),
-            LyricsFinder(lrclib), lrclib, CoverFinder(musicBrainz, coverArt), coverArt, LoudnessAnalyzer(appContext),
-        )
+        // Nothing here goes online.
+        repo = testRepository(appContext, db)
     }
 
     @After

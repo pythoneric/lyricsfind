@@ -158,12 +158,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             SongRepository.LyricsOutcome.NOT_ONLINE -> " · no lyrics online for it"
             SongRepository.LyricsOutcome.OFFLINE -> " · lyrics site unreachable, try again later"
             SongRepository.LyricsOutcome.NOT_ASKED -> ""
-        } + when (done.cover) {
-            SongRepository.LyricsOutcome.ADDED -> if (song.hasCover == true) " · cover replaced" else " · cover added"
-            SongRepository.LyricsOutcome.NOT_ONLINE -> if (song.hasCover == true) " · no new cover found, kept the old one" else " · no cover found"
-            SongRepository.LyricsOutcome.OFFLINE -> " · cover site unreachable"
-            else -> ""
-        } + volumeNote(done.volume)
+        } + coverNote(done.cover, hadCover = song.hasCover == true) + volumeNote(done.volume)
     }
 
     private fun volumeNote(v: SongRepository.LyricsOutcome) = when (v) {
@@ -212,12 +207,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun addCover(song: Song) = work("Couldn't add the cover") {
         val done = repo.addCover(song, replace = true)
         messageSongId = done.song.id
-        _message.value = when (done.cover) {
-            SongRepository.LyricsOutcome.ADDED -> if (song.hasCover == true) "Cover replaced" else "Cover added"
-            SongRepository.LyricsOutcome.ALREADY_THERE -> "This song already has a cover"
-            SongRepository.LyricsOutcome.NOT_ONLINE -> if (song.hasCover == true) "No new cover found; the old one stays" else "No cover found for its album"
-            else -> "The cover site can't be reached, try again later"
-        }
+        _message.value = coverOnlyMessage(done.cover, hadCover = song.hasCover == true)
     }
 
     /** The URL of a small preview of the cover a fix would add; null when the album isn't known. */

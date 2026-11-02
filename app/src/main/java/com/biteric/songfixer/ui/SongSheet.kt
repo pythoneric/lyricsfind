@@ -200,12 +200,7 @@ fun SongSheet(
             var addCover by remember(song.id) { mutableStateOf(settings.addCover && canCover) }
             CheckRow(
                 "Add cover art",
-                when {
-                    !canCover -> ".${song.extension} files can't hold a cover here"
-                    song.hasCover != true -> "The album's front cover, from the Cover Art Archive"
-                    addCover -> "The new cover replaces the one in the file"
-                    else -> "The file keeps its cover"
-                },
+                coverDetail(song, addCover),
                 addCover,
                 enabled = canCover,
             ) { addCover = it }
@@ -264,7 +259,7 @@ fun SongSheet(
             if ((song.status == SongStatus.OK || song.status == SongStatus.FIXED || song.status == SongStatus.KEPT) &&
                 song.extension in SongWriter.TAGGABLE
             ) {
-                TextButton(onClick = onAddCover, enabled = !busy) { Text(if (song.hasCover == true) "Replace cover only" else "Add cover only") }
+                TextButton(onClick = onAddCover, enabled = !busy) { Text(coverOnlyLabel(song)) }
             }
             if (song.extension in SongWriter.TAGGABLE) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

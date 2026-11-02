@@ -50,16 +50,17 @@ fun CoverPreview(key: Any?, findUrl: suspend () -> String?, size: Dp = 96.dp) =
 @Composable
 fun FileCover(uri: String, key: Any?, size: Dp = 96.dp) {
     val context = LocalContext.current
-    CoverBox(listOf(uri, key), size, "No cover in the file") {
-        withContext(Dispatchers.IO) {
-            val r = MediaMetadataRetriever()
-            try {
-                r.setDataSource(context, Uri.parse(uri))
-                r.embeddedPicture
-            } finally {
-                r.release()
-            }
-        }
+    CoverBox(listOf(uri, key), size, "No cover in the file") { embeddedCover(context, uri) }
+}
+
+/** The picture embedded in the song's file, as players see it; null when it has none. */
+suspend fun embeddedCover(context: android.content.Context, uri: String): ByteArray? = withContext(Dispatchers.IO) {
+    val r = MediaMetadataRetriever()
+    try {
+        r.setDataSource(context, Uri.parse(uri))
+        r.embeddedPicture
+    } finally {
+        r.release()
     }
 }
 
