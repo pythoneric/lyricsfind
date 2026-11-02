@@ -6,6 +6,7 @@ import com.biteric.songfixer.data.SongStatus
 import com.biteric.songfixer.files.SongWriter
 import com.biteric.songfixer.online.AcoustIdReleaseGroup
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -83,17 +84,51 @@ class MatchingTest {
     }
 
     @Test
-    fun aMissingYearIsAGapToFill() {
-        val withYear = c("Hello", "Adele", "25", "Pop").copy(year = 2015)
-        // The file has no year, the match knows one: something to fix.
-        assertEquals(SongStatus.SUGGESTED, Verdict.status("Hello", "Adele", "25", "Pop", withYear))
-        // The file has one: right, even when it isn't the match's (remasters, compilations).
-        assertEquals(SongStatus.OK, Verdict.status("Hello", "Adele", "25", "Pop", withYear, year = 2015))
-        assertEquals(SongStatus.OK, Verdict.status("Hello", "Adele", "25", "Pop", withYear, year = 2021))
-        // Neither knows one: nothing to fill.
-        assertEquals(SongStatus.OK, Verdict.status("Hello", "Adele", "25", "Pop", c("Hello", "Adele", "25", "Pop")))
-        // Not found stays not found, year or not.
-        assertEquals(SongStatus.NOT_FOUND, Verdict.status("x", "y", null, null, c("Hello", "Adele", score = 0.5).copy(year = 2015)))
+    fun theYearRule() {
+        val match = c("Hello", "Adele", "25", "Pop").copy(year = 2015)
+        // Same year: right.
+        assertEquals(SongStatus.OK, Verdict.status("Hello", "Adele", "25", "Pop", match, year = 2015))
+        assertNull(Verdict.correctYear("Hello", "Adele", 2015, listOf(match)))
+        // A different year: to fix, with the match's year.
+        assertEquals(SongStatus.SUGGESTED, Verdict.status("Hello", "Adele", "25", "Pop", match, year = 2021))
+        assertEquals(2015, Verdict.correctYear("Hello", "Adele", 2021, listOf(match)))
+        // No year: to fix.
+        assertEquals(SongStatus.SUGGESTED, Verdict.status("Hello", "Adele", "25", "Pop", match))
+        assertEquals(2015, Verdict.correctYear("Hello", "Adele", null, listOf(match)))
+        // A match without a year: right, whatever the file says.
+        val noYear = c("Hello", "Adele", "25", "Pop")
+        assertEquals(SongStatus.OK, Verdict.status("Hello", "Adele", "25", "Pop", noYear, year = 2021))
+        assertEquals(SongStatus.OK, Verdict.status("Hello", "Adele", "25", "Pop", noYear))
+        assertNull(Verdict.correctYear("Hello", "Adele", 2021, listOf(noYear)))
+    }
+
+    @Test
+    fun weakOrOtherMatchesNeverFlagAYear() {
+        // Weak: not found, and no year to correct.
+        val weak = c("Hello", "Adele", "25", "Pop", score = 0.5).copy(year = 2015)
+        assertEquals(SongStatus.NOT_FOUND, Verdict.status("x", "y", null, null, weak))
+        assertNull(Verdict.correctYear("Hello", "Adele", 2021, listOf(weak)))
+        // Another song or artist: the year isn't this song's.
+        val other = c("Someone Like You", "Adele").copy(year = 2011)
+        assertNull(Verdict.correctYear("Hello", "Adele", 2021, listOf(other)))
+        assertNull(Verdict.correctYear("Hello", "Lionel Richie", 1984, listOf(c("Hello", "Adele").copy(year = 2015))))
+        // A version of a known song (names not the same): its year is its own.
+        val original = c("Panic Room", "Au/Ra", score = 0.5).copy(year = 2018)
+        assertEquals(SongStatus.OK, Verdict.status("Panic Room (CamelPhat Club Mix)", "Au/Ra", "#", "Deep House", listOf(original), year = 2019))
+        assertNull(Verdict.correctYear("Panic Room (CamelPhat Club Mix)", "Au/Ra", 2019, listOf(original)))
+        // Same names in other spelling (case) count as the same names.
+        assertEquals(2017, Verdict.correctYear("Stop It", "Fisher", 2021, listOf(c("Stop It", "FISHER").copy(year = 2017))))
+    }
+
+    @Test
+    fun onlyTheYearWrong() {
+        val match = c("Hello", "Adele", "25", "Pop").copy(year = 2015)
+        assertTrue(Verdict.onlyYearWrong("Hello", "Adele", "25", "Pop", 2021, listOf(match)))
+        assertTrue(Verdict.onlyYearWrong("Hello", "Adele", "25", "Pop", null, listOf(match)))
+        // Right already, or more than the year missing (the genre), or the names wrong: not year-only.
+        assertTrue(!Verdict.onlyYearWrong("Hello", "Adele", "25", "Pop", 2015, listOf(match)))
+        assertTrue(!Verdict.onlyYearWrong("Hello", "Adele", "25", null, 2021, listOf(match)))
+        assertTrue(!Verdict.onlyYearWrong("Track 1", null, null, null, 2021, listOf(match)))
     }
 
     @Test

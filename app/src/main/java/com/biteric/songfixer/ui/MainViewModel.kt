@@ -222,8 +222,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         var lyrics = 0
         for ((song, c) in repo.sureOnes(songs.value)) {
             try {
-                val names = NewNames(c.title, c.artist, c.album.orEmpty(), c.genre.orEmpty(), c.year?.toString().orEmpty())
-                val done = repo.apply(song, names, s.writeTags && song.extension in SongWriter.TAGGABLE, s.renameFiles, s.addLyrics, s.addCover, c.releaseGroupId, s.normalize)
+                // A song whose only problem is its year gets just the year (no rename, names as they are).
+                val done = repo.apply(song, SongRepository.surePlan(song, c, s))
                 if (done.lyrics == SongRepository.LyricsOutcome.ADDED) lyrics++
                 fixed++
             } catch (e: Exception) {
@@ -231,6 +231,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         _message.value = "Fixed $fixed songs" + (if (s.addLyrics) ", lyrics added to $lyrics" else "") + if (failed > 0) ", $failed couldn't be changed" else ""
+    }
+
+    /** Songs whose names are right and only the year is wrong. */
+    val toCorrectYear: StateFlow<Int> = repo.songs.map { SongRepository.yearOnly(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    /** Writes the match's year into every song whose only problem is the year; nothing else is changed. */
+    fun correctYears() = work("Correcting years stopped") {
+        var done = 0
+        var failed = 0
+        for (song in SongRepository.yearOnly(songs.value)) {
+            try {
+                repo.apply(song, SongRepository.yearOnlyPlan(song, settings.value, extras = false))
+                done++
+            } catch (e: Exception) {
+                failed++
+            }
+        }
+        _message.value = "Year corrected in " + (if (done == 1) "1 song" else "$done songs") + if (failed > 0) ", $failed couldn't be changed" else ""
     }
 
     /** Adds lyrics to the songs that are named right but have none in the file yet. */

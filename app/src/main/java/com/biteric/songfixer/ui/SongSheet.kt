@@ -167,15 +167,17 @@ fun SongSheet(
 
             Spacer(Modifier.height(16.dp))
             Section("Fix")
-            // Start from the chosen suggestion; keep what the file has where the suggestion has nothing.
-            var title by remember(song.id, candidate) { mutableStateOf(candidate?.title ?: song.title.orEmpty()) }
-            var artist by remember(song.id, candidate) { mutableStateOf(candidate?.artist ?: song.artist.orEmpty()) }
-            var album by remember(song.id, candidate) { mutableStateOf(candidate?.album ?: song.album.orEmpty()) }
-            var genre by remember(song.id, candidate) { mutableStateOf(candidate?.genre ?: song.genre.orEmpty()) }
-            var year by remember(song.id, candidate) { mutableStateOf(startYear(candidate, song)) }
+            // Start from the chosen suggestion (keeping what the file has where it has nothing), or, when only
+            // the year is wrong, from the file's own names: then Fix changes the year alone.
+            val start = remember(song.id, candidate) { fixStart(song, candidate, settings.renameFiles, settings.addCover) }
+            var title by remember(start) { mutableStateOf(start.title) }
+            var artist by remember(start) { mutableStateOf(start.artist) }
+            var album by remember(start) { mutableStateOf(start.album) }
+            var genre by remember(start) { mutableStateOf(start.genre) }
+            var year by remember(start) { mutableStateOf(start.year) }
             val yearProblem = yearProblem(year)
             var writeTags by remember(song.id) { mutableStateOf(settings.writeTags && song.extension in SongWriter.TAGGABLE) }
-            var rename by remember(song.id) { mutableStateOf(settings.renameFiles) }
+            var rename by remember(start) { mutableStateOf(start.rename) }
             Edit("Title", title) { title = it }
             Edit("Artist", artist) { artist = it }
             Edit("Album", album) { album = it }
@@ -211,7 +213,7 @@ fun SongSheet(
             // Cover: the one in the file now next to the album's front cover (from the chosen match's
             // album, or a search by album name). Ticked = the new one goes in, also over an old one.
             val canCover = song.extension in SongWriter.TAGGABLE
-            var addCover by remember(song.id) { mutableStateOf(settings.addCover && canCover) }
+            var addCover by remember(start) { mutableStateOf(start.addCover && canCover) }
             CheckRow(
                 "Add cover art",
                 coverDetail(song, addCover),

@@ -157,9 +157,10 @@ class YearTest {
     }
 
     @Test
-    fun rightSongWithoutAYearBecomesSomethingToFix() = runTest {
+    fun rightSongWithAMissingOrWrongYearBecomesSomethingToFix() = runTest {
         val noYear = oldSong(file("noyear", null), SongStatus.OK, 2015)
-        val hasYear = oldSong(file("hasyear", 2011), SongStatus.OK, 2015)
+        val wrongYear = oldSong(file("wrongyear", 2011), SongStatus.OK, 2015)
+        val sameYear = oldSong(file("sameyear", 2015), SongStatus.OK, 2015)
         val neitherKnows = oldSong(file("neither", null), SongStatus.OK, null)
         repo.readYears()
         db.songs().get(noYear.id)!!.let {
@@ -167,11 +168,12 @@ class YearTest {
             assertNull(it.year)
             assertTrue(it.yearRead)
         }
-        // A year of its own (another release) is right as it is.
-        db.songs().get(hasYear.id)!!.let {
-            assertEquals(SongStatus.OK, it.status)
+        // Another year than the match's: corrected too.
+        db.songs().get(wrongYear.id)!!.let {
+            assertEquals(SongStatus.SUGGESTED, it.status)
             assertEquals(2011, it.year)
         }
+        assertEquals(SongStatus.OK, db.songs().get(sameYear.id)!!.status)
         assertEquals(SongStatus.OK, db.songs().get(neitherKnows.id)!!.status)
         // Read once.
         assertTrue(db.songs().yearNotRead().isEmpty())
