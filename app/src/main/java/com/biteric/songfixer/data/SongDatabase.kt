@@ -56,10 +56,11 @@ interface SongDao {
     @Query("UPDATE songs SET status = 'NEW' WHERE status = 'FAILED'")
     suspend fun markFailedUnchecked()
 
-    @Query("SELECT * FROM songs WHERE loudnessChecked = 0 ORDER BY folder, fileName COLLATE NOCASE LIMIT 1")
+    /** Not measured yet, or its volume tags not read yet (read again after the file changed). */
+    @Query("SELECT * FROM songs WHERE loudnessChecked = 0 OR gainVerdict IS NULL ORDER BY folder, fileName COLLATE NOCASE LIMIT 1")
     suspend fun nextUnmeasured(): Song?
 
-    @Query("SELECT COUNT(*) FROM songs WHERE loudnessChecked = 0")
+    @Query("SELECT COUNT(*) FROM songs WHERE loudnessChecked = 0 OR gainVerdict IS NULL")
     suspend fun unmeasuredCount(): Int
 }
 
@@ -73,7 +74,7 @@ class Converters {
     fun toCandidates(s: String): List<Candidate> = runCatching { json.decodeFromString<List<Candidate>>(s) }.getOrDefault(emptyList())
 }
 
-@Database(entities = [Song::class], version = 4)
+@Database(entities = [Song::class], version = 5)
 @TypeConverters(Converters::class)
 abstract class SongDatabase : RoomDatabase() {
     abstract fun songs(): SongDao
@@ -100,8 +101,18 @@ abstract class SongDatabase : RoomDatabase() {
             }
         }
 
+        /** v5: the volume tags already in the file, and whether they follow ReplayGain 2.0. */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE songs ADD COLUMN existingTrackGain TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN existingTrackPeak TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN existingReference TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN gainVerdict TEXT DEFAULT NULL")
+            }
+        }
+
         fun create(context: Context) = Room.databaseBuilder(context, SongDatabase::class.java, "songfixer.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .build()
     }
 }

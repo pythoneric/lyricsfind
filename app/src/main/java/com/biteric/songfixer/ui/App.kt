@@ -10,6 +10,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -381,6 +383,7 @@ private fun SongRow(song: Song, onClick: () -> Unit, onPlay: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SongRowText(song: Song, modifier: Modifier) {
     Column(modifier) {
@@ -413,7 +416,8 @@ private fun SongRowText(song: Song, modifier: Modifier) {
                 )
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        // Wraps: "Volume tags not standard" next to the others doesn't fit on one line.
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             statusLabel(song)?.let { SmallChip(it) }
             loudnessChip(song)?.let { SmallChip(it) }
             if (song.status == SongStatus.SUGGESTED && best != null) SmallChip(if (best.sure) "Sure match" else "Check it")

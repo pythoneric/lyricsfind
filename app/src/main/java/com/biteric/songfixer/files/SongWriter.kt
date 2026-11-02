@@ -15,6 +15,9 @@ import org.jaudiotagger.tag.reference.PictureTypes
 import android.graphics.BitmapFactory
 import com.biteric.songfixer.online.CoverImage
 import com.biteric.songfixer.loudness.Loudness
+import com.biteric.songfixer.loudness.GainVerdict
+import com.biteric.songfixer.loudness.ReplayGainCheck
+import com.biteric.songfixer.loudness.VolumeTags
 import java.io.File
 
 /** The names to give a song. Blank fields are left as they are in the file. */
@@ -96,12 +99,16 @@ class SongWriter(private val context: Context) {
                     tag.setField(art)
                 }.fold({ EmbedResult.ADDED }, { EmbedResult.UNSUPPORTED })
             }
-            // ReplayGain: tags only, the audio is untouched. Existing values stay unless re-measured.
+            // ReplayGain: tags only, the audio is untouched. Tags that already follow ReplayGain 2.0
+            // stay unless re-measured; any others (RG 1.0, R128, another reference, wrong values) are replaced.
+            val existing = runCatching { ReplayGainTags.volumeTags(tag) }.getOrDefault(VolumeTags())
             val gainResult = when {
                 replayGain == null -> null
                 !ReplayGainTags.supports(tag) -> EmbedResult.UNSUPPORTED
-                !replaceReplayGain && ReplayGainTags.trackGain(tag) != null -> EmbedResult.KEPT_EXISTING
-                runCatching { ReplayGainTags.write(tag, replayGain) }.getOrDefault(false) -> EmbedResult.ADDED
+                !replaceReplayGain && ReplayGainCheck.verdict(existing, replayGain.lufs) == GainVerdict.STANDARD -> EmbedResult.KEPT_EXISTING
+                // R128_TRACK_GAIN goes only when it's what these tags replace.
+                runCatching { ReplayGainTags.write(tag, replayGain, removeR128 = existing.trackGain == null && existing.r128TrackGain != null) }
+                    .getOrDefault(false) -> EmbedResult.ADDED
                 else -> EmbedResult.UNSUPPORTED
             }
             runCatching { audio.commit() }.getOrElse { throw Failed("The tags couldn't be written: ${it.message}") }
@@ -115,6 +122,24 @@ class SongWriter(private val context: Context) {
             context.contentResolver.openOutputStream(uri, "wt")?.use { out -> copy.inputStream().use { it.copyTo(out) } }
                 ?: throw Failed("The song's file can't be changed")
             Written(embed, coverResult, gainResult)
+        } finally {
+            copy.delete()
+        }
+    }
+
+    /**
+     * The song's volume tags as they are, read from a copy in the app's cache; empty when the
+     * format has none or they can't be read.
+     */
+    suspend fun readVolumeTags(uri: Uri, extension: String): VolumeTags = withContext(Dispatchers.IO) {
+        if (extension !in TAGGABLE) return@withContext VolumeTags()
+        val dir = File(context.cacheDir, "tag-read").apply { mkdirs() }
+        // Its own file: the background check reads while a fix may be writing "edit.*".
+        val copy = File(dir, "read.$extension")
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input -> copy.outputStream().use { input.copyTo(it) } }
+                ?: return@withContext VolumeTags()
+            runCatching { AudioFileIO.read(copy).tag?.let(ReplayGainTags::volumeTags) }.getOrNull() ?: VolumeTags()
         } finally {
             copy.delete()
         }

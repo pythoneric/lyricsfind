@@ -3,6 +3,7 @@ package com.biteric.songfixer.data
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.biteric.songfixer.loudness.GainVerdict
 import kotlinx.serialization.Serializable
 
 enum class SongStatus {
@@ -78,7 +79,22 @@ data class Song(
     val loudnessChecked: Boolean = false,
     /** The file has ReplayGain tags: written by the app or already there. Null = not known. */
     val replayGainInFile: Boolean? = null,
+    /** The volume tags found in the file when it was last read (as written; null = not there). */
+    val existingTrackGain: String? = null,
+    val existingTrackPeak: String? = null,
+    val existingReference: String? = null,
+    /** What those tags are worth; null = not read yet. */
+    val gainVerdict: GainVerdict? = null,
 ) {
+    /**
+     * The file's volume tags follow ReplayGain 2.0, so they're left alone. Before tags were read
+     * (older databases), tags the app wrote itself count.
+     */
+    val volumeTagsStandard: Boolean get() = gainVerdict == GainVerdict.STANDARD || (gainVerdict == null && replayGainInFile == true)
+
+    /** The file has volume tags that get replaced with standard ones. */
+    val volumeTagsNotStandard: Boolean get() = gainVerdict?.notStandard == true
+
     val best: Candidate? get() = candidates.firstOrNull()
     val extension: String get() = fileName.substringAfterLast('.', "").lowercase()
 }

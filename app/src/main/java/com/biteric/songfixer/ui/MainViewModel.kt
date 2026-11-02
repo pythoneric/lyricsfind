@@ -167,15 +167,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun volumeNote(v: SongRepository.LyricsOutcome) = when (v) {
         SongRepository.LyricsOutcome.ADDED -> " · volume tagged"
-        SongRepository.LyricsOutcome.ALREADY_THERE -> " · it already had volume tags"
+        SongRepository.LyricsOutcome.ALREADY_THERE -> " · its volume tags already follow the standard"
         SongRepository.LyricsOutcome.NOT_ONLINE -> " · volume couldn't be measured"
         else -> ""
     }
 
-    /** Songs measured that don't have ReplayGain tags yet. */
+    /** Songs measured without standard ReplayGain tags (none, or ones that get replaced). */
     val toNormalize: StateFlow<Int> = repo.songs.map { repo.needNormalizing(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
-    /** Writes ReplayGain tags into every measured song that doesn't have them. */
+    /** Writes ReplayGain tags into every measured song without standard ones. */
     fun normalizeAll() = work("Normalizing stopped") {
         var added = 0
         var kept = 0
@@ -191,7 +191,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 failed++
             }
         }
-        _message.value = "Volume tagged in $added songs" + (if (kept > 0) ", $kept had tags already" else "") + if (failed > 0) ", $failed couldn't be changed" else ""
+        _message.value = "Volume tagged in $added songs" + (if (kept > 0) ", $kept already standard" else "") + if (failed > 0) ", $failed couldn't be changed" else ""
     }
 
     fun normalize(song: Song) = work("Couldn't tag the volume") {
