@@ -17,6 +17,8 @@ data class SettingsState(
     val lrcFiles: Boolean = false,
     /** Put the album cover (Cover Art Archive) into the file when it has none. */
     val addCover: Boolean = true,
+    /** Measure each song's loudness and write ReplayGain tags when fixing (volume normalization). */
+    val normalize: Boolean = true,
 )
 
 class Settings(context: Context) {
@@ -33,6 +35,7 @@ class Settings(context: Context) {
         addLyrics = prefs.getBoolean("add_lyrics", true),
         lrcFiles = prefs.getBoolean("lrc_files", false),
         addCover = prefs.getBoolean("add_cover", true),
+        normalize = prefs.getBoolean("normalize", true),
     )
 
     fun update(change: (SettingsState) -> SettingsState) {
@@ -45,6 +48,7 @@ class Settings(context: Context) {
             .putBoolean("add_lyrics", s.addLyrics)
             .putBoolean("lrc_files", s.lrcFiles)
             .putBoolean("add_cover", s.addCover)
+            .putBoolean("normalize", s.normalize)
             .apply()
         _state.value = s.copy(acoustIdKey = s.acoustIdKey.trim())
     }

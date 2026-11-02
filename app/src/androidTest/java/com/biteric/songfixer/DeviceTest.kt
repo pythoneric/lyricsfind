@@ -113,6 +113,52 @@ class DeviceTest {
     }
 
     @Test
+    fun writesAndReadsBackReplayGainTags() = runTest {
+        val f = copyAsset("test.mp3")
+        val writer = SongWriter(appContext)
+        // Another program's TXXX frame must survive ours.
+        AudioFileIO.read(f).let { audio ->
+            val tag = audio.tagOrCreateAndSetDefault as org.jaudiotagger.tag.id3.AbstractID3v2Tag
+            tag.setFrame("TXXX", listOf(tag.createFrame("TXXX").apply {
+                body = org.jaudiotagger.tag.id3.framebody.FrameBodyTXXX(0, "MusicBrainz Album Id", "abc")
+            }))
+            audio.commit()
+        }
+        val loud = com.biteric.songfixer.loudness.Loudness(lufs = -9.58, truePeak = 0.988)
+        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = loud).replayGain)
+        val tag = AudioFileIO.read(f).tag
+        assertEquals("-8.42 dB", com.biteric.songfixer.files.ReplayGainTags.trackGain(tag))
+        assertEquals("0.988000", com.biteric.songfixer.files.ReplayGainTags.trackPeak(tag))
+        assertEquals("-18.00 LUFS", com.biteric.songfixer.files.ReplayGainTags.reference(tag))
+        val descriptions = (tag as org.jaudiotagger.tag.id3.AbstractID3v2Tag).getFields("TXXX")
+            .map { ((it as org.jaudiotagger.tag.id3.AbstractID3v2Frame).body as org.jaudiotagger.tag.id3.framebody.FrameBodyTXXX).description }
+        assertTrue("other TXXX kept: $descriptions", "MusicBrainz Album Id" in descriptions)
+        assertEquals(4, descriptions.size)
+
+        // Existing tags stay unless re-measured.
+        val other = com.biteric.songfixer.loudness.Loudness(lufs = -20.0, truePeak = 0.5)
+        assertEquals(SongWriter.EmbedResult.KEPT_EXISTING, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = other).replayGain)
+        assertEquals("-8.42 dB", com.biteric.songfixer.files.ReplayGainTags.trackGain(AudioFileIO.read(f).tag))
+        assertEquals(SongWriter.EmbedResult.ADDED, writer.writeTags(Uri.fromFile(f), "mp3", NewNames("", "", "", ""), replayGain = other, replaceReplayGain = true).replayGain)
+        val replaced = AudioFileIO.read(f).tag
+        assertEquals("2.00 dB", com.biteric.songfixer.files.ReplayGainTags.trackGain(replaced))
+        assertEquals(4, (replaced as org.jaudiotagger.tag.id3.AbstractID3v2Tag).getFields("TXXX").size)
+        assertEquals(10, AudioFileIO.read(f).audioHeader.trackLength)
+        f.delete()
+    }
+
+    /** Decodes the whole of test.mp3 with Android's codecs and measures it. */
+    @Test
+    fun measuresLoudnessOfARealFile() = runTest {
+        val f = copyAsset("test.mp3")
+        val l = com.biteric.songfixer.loudness.LoudnessAnalyzer(appContext).measure(Uri.fromFile(f))
+        android.util.Log.i("DeviceTest", "test.mp3: ${l.lufs} LUFS, true peak ${l.truePeak}, gain ${l.trackGainDb} dB")
+        assertTrue("loudness ${l.lufs}", l.lufs in -40.0..0.0)
+        assertTrue("peak ${l.truePeak}", l.truePeak in 0.01..2.0)
+        f.delete()
+    }
+
+    @Test
     fun blankFieldsKeepWhatTheFileHas() = runTest {
         val f = copyAsset("test.mp3")
         val writer = SongWriter(appContext)

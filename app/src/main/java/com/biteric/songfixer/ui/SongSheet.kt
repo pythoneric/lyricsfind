@@ -59,7 +59,9 @@ fun SongSheet(
     settings: SettingsState,
     busy: Boolean,
     onDismiss: () -> Unit,
-    onApply: (NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean, addCover: Boolean, releaseGroupId: String?) -> Unit,
+    onApply: (NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean, addCover: Boolean, releaseGroupId: String?, normalize: Boolean) -> Unit,
+    onNormalize: () -> Unit,
+    onRemeasure: () -> Unit,
     onAddLyrics: () -> Unit,
     onAddCover: () -> Unit,
     /** The preview URL of the cover a fix would add (release group, album, artist). */
@@ -95,6 +97,11 @@ fun SongSheet(
             Field("Artist", song.artist)
             Field("Album", song.album)
             Field("Genre", song.genre)
+            Field(
+                "Volume",
+                loudnessSummary(song)
+                    ?: if (song.loudnessChecked) "couldn't be measured" else "not measured yet",
+            )
             song.note?.let {
                 Spacer(Modifier.height(6.dp))
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -211,15 +218,30 @@ fun SongSheet(
                 }
             }
 
+            // Volume: ReplayGain tags; players that read them (BitEric does) level the song. The audio isn't changed.
+            val canNormalize = song.extension in SongWriter.TAGGABLE
+            var normalize by remember(song.id) { mutableStateOf(settings.normalize && canNormalize && song.replayGainInFile != true) }
+            CheckRow(
+                "Normalize volume",
+                when {
+                    !canNormalize -> ".${song.extension} files can't hold volume tags here"
+                    song.replayGainInFile == true -> "This song has volume tags already (use Re-measure to replace them)"
+                    song.trackGainDb != null -> "ReplayGain tags: ${String.format(java.util.Locale.US, "%+.1f dB", song.trackGainDb)} to reach −18 LUFS; the audio isn't changed"
+                    else -> "Measures it, then adds ReplayGain tags; the audio isn't changed"
+                },
+                normalize,
+                enabled = canNormalize && song.replayGainInFile != true,
+            ) { normalize = it }
+
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = {
                         val year = candidate?.year?.takeIf { candidate.title == title && candidate.artist == artist }?.toString().orEmpty()
                         val rgId = candidate?.releaseGroupId?.takeIf { candidate.album == album }
-                        onApply(NewNames(title, artist, album, genre, year), writeTags, rename, addLyrics, addCover, rgId)
+                        onApply(NewNames(title, artist, album, genre, year), writeTags, rename, addLyrics, addCover, rgId, normalize)
                     },
-                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && (writeTags || rename || addLyrics || addCover),
+                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && (writeTags || rename || addLyrics || addCover || normalize),
                 ) { Text("Fix") }
                 if (song.status != SongStatus.KEPT && song.status != SongStatus.FIXED) TextButton(onClick = onKeep) { Text("Keep as is") }
                 TextButton(onClick = onRecheck) { Text("Check again") }
@@ -232,6 +254,15 @@ fun SongSheet(
                 song.hasCover != true && song.extension in SongWriter.TAGGABLE
             ) {
                 TextButton(onClick = onAddCover, enabled = !busy) { Text("Add cover only") }
+            }
+            if (song.extension in SongWriter.TAGGABLE) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (song.replayGainInFile != true && song.status != SongStatus.NEW) {
+                        TextButton(onClick = onNormalize, enabled = !busy) { Text("Normalize volume only") }
+                    }
+                    // Measures again and replaces volume tags, the app's or another program's.
+                    TextButton(onClick = onRemeasure, enabled = !busy) { Text("Re-measure") }
+                }
             }
             Spacer(Modifier.height(24.dp))
         }

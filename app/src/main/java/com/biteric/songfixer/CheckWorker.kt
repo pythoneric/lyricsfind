@@ -41,19 +41,31 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         } catch (e: AcoustIdKeyException) {
             return Result.failure(workDataOf(KEY_ERROR to (e.message ?: "AcoustID key not accepted")))
         }
+        // Then loudness, one whole song at a time (for volume normalization).
+        if (app.settings.current.normalize) {
+            val toMeasure = app.repository.unmeasuredCount()
+            var measured = 0
+            setProgress(workDataOf(KEY_DONE to 0, KEY_TOTAL to toMeasure, KEY_PHASE to PHASE_LOUDNESS))
+            setForeground(foregroundInfo(0, toMeasure, PHASE_LOUDNESS))
+            while (app.repository.measureNext()) {
+                measured++
+                setProgress(workDataOf(KEY_DONE to measured, KEY_TOTAL to toMeasure, KEY_PHASE to PHASE_LOUDNESS))
+                setForeground(foregroundInfo(measured, toMeasure, PHASE_LOUDNESS))
+            }
+        }
         return Result.success()
     }
 
     override suspend fun getForegroundInfo() = foregroundInfo(0, 0)
 
-    private fun foregroundInfo(done: Int, total: Int): ForegroundInfo {
+    private fun foregroundInfo(done: Int, total: Int, phase: String = PHASE_NAMES): ForegroundInfo {
         val nm = applicationContext.getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(NotificationChannel(CHANNEL, "Checking songs", NotificationManager.IMPORTANCE_LOW))
         }
         val n = NotificationCompat.Builder(applicationContext, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Checking song names")
+            .setContentTitle(if (phase == PHASE_LOUDNESS) "Measuring loudness" else "Checking song names")
             .setContentText(if (total > 0) "$done of $total" else "Reading the folder…")
             .setProgress(total, done, total == 0)
             .setOngoing(true)
@@ -71,6 +83,9 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         const val KEY_DONE = "done"
         const val KEY_TOTAL = "total"
         const val KEY_ERROR = "error"
+        const val KEY_PHASE = "phase"
+        const val PHASE_NAMES = "names"
+        const val PHASE_LOUDNESS = "loudness"
         private const val CHANNEL = "check"
         private const val NOTIFICATION_ID = 1
 

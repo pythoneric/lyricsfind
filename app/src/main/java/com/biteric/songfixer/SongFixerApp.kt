@@ -6,6 +6,7 @@ import com.biteric.songfixer.data.SongDatabase
 import com.biteric.songfixer.files.MusicFolder
 import com.biteric.songfixer.files.SongWriter
 import com.biteric.songfixer.fingerprint.AudioFingerprinter
+import com.biteric.songfixer.loudness.LoudnessAnalyzer
 import com.biteric.songfixer.match.CoverFinder
 import com.biteric.songfixer.match.Identifier
 import com.biteric.songfixer.online.CoverArtApi
@@ -46,6 +47,7 @@ class SongFixerApp : Application() {
             lrclib,
             CoverFinder(musicBrainz, coverArt),
             coverArt,
+            LoudnessAnalyzer(this),
         )
     }
 }

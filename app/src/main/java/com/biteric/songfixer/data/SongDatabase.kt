@@ -55,6 +55,12 @@ interface SongDao {
 
     @Query("UPDATE songs SET status = 'NEW' WHERE status = 'FAILED'")
     suspend fun markFailedUnchecked()
+
+    @Query("SELECT * FROM songs WHERE loudnessChecked = 0 ORDER BY folder, fileName COLLATE NOCASE LIMIT 1")
+    suspend fun nextUnmeasured(): Song?
+
+    @Query("SELECT COUNT(*) FROM songs WHERE loudnessChecked = 0")
+    suspend fun unmeasuredCount(): Int
 }
 
 class Converters {
@@ -67,7 +73,7 @@ class Converters {
     fun toCandidates(s: String): List<Candidate> = runCatching { json.decodeFromString<List<Candidate>>(s) }.getOrDefault(emptyList())
 }
 
-@Database(entities = [Song::class], version = 3)
+@Database(entities = [Song::class], version = 4)
 @TypeConverters(Converters::class)
 abstract class SongDatabase : RoomDatabase() {
     abstract fun songs(): SongDao
@@ -83,8 +89,19 @@ abstract class SongDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) = db.execSQL("ALTER TABLE songs ADD COLUMN hasCover INTEGER DEFAULT NULL")
         }
 
+        /** v4: loudness (ReplayGain). */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE songs ADD COLUMN loudnessLufs REAL DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN trackGainDb REAL DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN truePeak REAL DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN loudnessChecked INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE songs ADD COLUMN replayGainInFile INTEGER DEFAULT NULL")
+            }
+        }
+
         fun create(context: Context) = Room.databaseBuilder(context, SongDatabase::class.java, "songfixer.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build()
     }
 }
