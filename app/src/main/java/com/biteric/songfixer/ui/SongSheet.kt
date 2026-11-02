@@ -11,10 +11,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.maxLength
+import androidx.compose.foundation.text.input.then
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
@@ -32,6 +37,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextFieldLabelPosition
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -170,27 +176,31 @@ fun SongSheet(
             // Start from the chosen suggestion (keeping what the file has where it has nothing), or, when only
             // the year is wrong, from the file's own names: then Fix changes the year alone.
             val start = remember(song.id, candidate) { fixStart(song, candidate, settings.renameFiles, settings.addCover) }
-            var title by remember(start) { mutableStateOf(start.title) }
-            var artist by remember(start) { mutableStateOf(start.artist) }
-            var album by remember(start) { mutableStateOf(start.album) }
-            var genre by remember(start) { mutableStateOf(start.genre) }
-            var year by remember(start) { mutableStateOf(start.year) }
+            val titleField = remember(start) { TextFieldState(start.title) }
+            val artistField = remember(start) { TextFieldState(start.artist) }
+            val albumField = remember(start) { TextFieldState(start.album) }
+            val genreField = remember(start) { TextFieldState(start.genre) }
+            val yearField = remember(start) { TextFieldState(start.year) }
+            val title = titleField.text.toString()
+            val artist = artistField.text.toString()
+            val album = albumField.text.toString()
+            val genre = genreField.text.toString()
+            val year = yearField.text.toString()
             val yearProblem = yearProblem(year)
             var writeTags by remember(song.id) { mutableStateOf(settings.writeTags && song.extension in SongWriter.TAGGABLE) }
             var rename by remember(start) { mutableStateOf(start.rename) }
-            Edit("Title", title) { title = it }
-            Edit("Artist", artist) { artist = it }
-            Edit("Album", album) { album = it }
-            Edit("Genre", genre) { genre = it }
-            OutlinedTextField(
-                year,
-                { year = it.filter(Char::isDigit).take(4) },
-                Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                label = { Text("Year") },
-                singleLine = true,
-                isError = yearProblem != null,
-                supportingText = yearProblem?.let { { Text(it) } },
+            Edit("Title", titleField)
+            Edit("Artist", artistField)
+            Edit("Album", albumField)
+            Edit("Genre", genreField)
+            Edit(
+                "Year", yearField,
+                problem = yearProblem,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                // Digits only, at most four.
+                inputTransformation = InputTransformation.maxLength(4).then {
+                    if (!asCharSequence().all(Char::isDigit)) revertAllChanges()
+                },
             )
             CheckRow(
                 "Write tags into the file",
@@ -334,9 +344,28 @@ private fun Field(label: String, value: String?) {
 
 
 @Composable
-private fun Edit(label: String, value: String, onChange: (String) -> Unit) {
-    OutlinedTextField(value, onChange, Modifier.fillMaxWidth().padding(vertical = 2.dp), label = { Text(label) }, singleLine = true)
+private fun Edit(
+    label: String,
+    state: TextFieldState,
+    problem: String? = null,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    inputTransformation: InputTransformation? = null,
+) {
+    OutlinedTextField(
+        state,
+        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        labelPosition = FIELD_LABEL,
+        label = { Text(label) },
+        isError = problem != null,
+        supportingText = problem?.let { { Text(it) } },
+        keyboardOptions = keyboardOptions,
+        inputTransformation = inputTransformation,
+        lineLimits = TextFieldLineLimits.SingleLine,
+    )
 }
+
+/** Field names stay on the border, also over an empty field (like a missing year), so every field reads alike. */
+private val FIELD_LABEL = TextFieldLabelPosition.Attached(alwaysMinimize = true)
 
 /** A cover to pick, with its label under it; the picked one is outlined. */
 @Composable
