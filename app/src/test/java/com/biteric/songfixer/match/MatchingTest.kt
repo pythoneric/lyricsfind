@@ -83,6 +83,17 @@ class MatchingTest {
     }
 
     @Test
+    fun aVersionOfAKnownSongIsNamedRight() {
+        // The club mix (7 min) when only the 4-minute original is known: names right as they are.
+        val original = c("Panic Room", "Au/Ra", score = 0.5)
+        assertEquals(SongStatus.OK, Verdict.status("Panic Room (CamelPhat Club Mix)", "Au/Ra", "#", "Deep House", listOf(original)))
+        // Guests in the title, credited as artists in the database.
+        assertEquals(SongStatus.OK, Verdict.status("Common Emotion ft. MNEK", "Rudimental", "#", "Deep House", listOf(c("Common Emotion", "Rudimental feat. MNEK", "Common Emotion"))))
+        // Another artist's song of the same name is not.
+        assertEquals(SongStatus.NOT_FOUND, Verdict.status("Panic Room (Club Mix)", "Au/Ra", "#", "House", listOf(c("Panic Room", "Somebody Else", score = 0.5))))
+    }
+
+    @Test
     fun fileNames() {
         assertEquals("AC_DC - Back in Black.mp3".replace("_", " "), SongWriter.fileName("AC/DC", "Back in Black", "mp3"))
         assertEquals("Artist - What.flac", SongWriter.fileName("Artist", "What?", "flac"))

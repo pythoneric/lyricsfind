@@ -53,6 +53,43 @@ object Http {
         return requestOnce(url, userAgent, form)
     }
 
+    /** An image (or other binary) and its type, or null for 404. Follows redirects, also to other hosts. */
+    suspend fun download(url: String, userAgent: String, maxBytes: Int = 8_000_000): Pair<ByteArray, String?>? = withContext(Dispatchers.IO) {
+        var current = url
+        repeat(5) {
+            val conn = URL(current).openConnection() as HttpURLConnection
+            try {
+                conn.connectTimeout = 15_000
+                conn.readTimeout = 30_000
+                conn.instanceFollowRedirects = false
+                conn.setRequestProperty("User-Agent", userAgent)
+                when (val code = conn.responseCode) {
+                    HttpURLConnection.HTTP_OK -> {
+                        val bytes = conn.inputStream.use { input ->
+                            val out = java.io.ByteArrayOutputStream()
+                            val buf = ByteArray(16_384)
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                if (out.size() > maxBytes) throw IOException("Image too large")
+                            }
+                            out.toByteArray()
+                        }
+                        return@withContext bytes to conn.contentType
+                    }
+                    HttpURLConnection.HTTP_NOT_FOUND -> return@withContext null
+                    // Cover Art Archive answers with a redirect to archive.org.
+                    in 300..399 -> current = URL(URL(current), conn.getHeaderField("Location") ?: throw IOException("Redirect without a place")).toString()
+                    else -> throw HttpException(code, "HTTP $code")
+                }
+            } finally {
+                conn.disconnect()
+            }
+        }
+        throw IOException("Too many redirects")
+    }
+
     private suspend fun requestOnce(url: String, userAgent: String, form: String?): String? = withContext(Dispatchers.IO) {
         val conn = URL(url).openConnection() as HttpURLConnection
         try {

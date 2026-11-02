@@ -20,6 +20,33 @@ object Text {
 
     fun same(a: String?, b: String?) = normalize(a).let { it.isNotEmpty() && it == normalize(b) }
 
+    private val anyBrackets = Regex("""\s*[(\[][^)\]]*[)\]]""")
+
+    /**
+     * The song's name without its version and guests: "Panic Room (CamelPhat Club Mix)" →
+     * "Panic Room", "Common Emotion ft. MNEK" → "Common Emotion". The original title when
+     * nothing is left.
+     */
+    fun baseTitle(s: String): String =
+        s.replace(anyBrackets, "").replace(featuring, "").trim(' ', '-', '–').ifBlank { s.trim() }
+
+    private val versionWords = Regex(
+        """\b(mix|remix|edit|extended|live|acoustic|version|instrumental|intrumental|dub|vip|rework|bootleg|radio|club|original|unplugged|demo|cover|reprise|session|remaster(ed)?)\b""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * Same song, maybe another version of it: same base title, and whatever [a] adds is a
+     * version or guests ("(CamelPhat Club Mix)", "ft. MNEK"), not junk like "(Official Video)".
+     */
+    fun sameSong(a: String?, b: String?): Boolean {
+        if (a == null || b == null) return false
+        val base = normalize(baseTitle(a))
+        if (base.isEmpty() || base != normalize(baseTitle(b))) return false
+        val extra = a.replace(baseTitle(a), "")
+        return extra.isBlank() || featuring.containsMatchIn(a) || versionWords.containsMatchIn(extra)
+    }
+
     /**
      * 0..1: how alike two names are. The best of word overlap (handles reordered or extra words)
      * and letter-pair overlap (handles typos and run-together words).

@@ -12,6 +12,10 @@ data class MbCredit(val name: String, val joinphrase: String? = null, val artist
 
 @Serializable
 data class MbReleaseGroup(
+    val id: String? = null,
+    val title: String? = null,
+    val score: Int? = null,
+    @SerialName("artist-credit") val artistCredit: List<MbCredit> = emptyList(),
     @SerialName("primary-type") val primaryType: String? = null,
     @SerialName("secondary-types") val secondaryTypes: List<String> = emptyList(),
 )
@@ -45,6 +49,9 @@ data class MbGenre(val name: String, val count: Int = 0)
 private data class MbSearch(val recordings: List<MbRecording> = emptyList())
 
 @Serializable
+private data class MbReleaseGroupSearch(@SerialName("release-groups") val releaseGroups: List<MbReleaseGroup> = emptyList())
+
+@Serializable
 private data class MbWithGenres(val genres: List<MbGenre> = emptyList())
 
 /** musicbrainz.org web service: free, no key, at most one request a second. */
@@ -60,6 +67,13 @@ class MusicBrainzApi(private val baseUrl: String = "https://musicbrainz.org", pr
         }
         val body = get("/ws/2/recording", listOf("query" to q, "limit" to limit.toString())) ?: return emptyList()
         return json.decodeFromString<MbSearch>(body).recordings
+    }
+
+    /** Albums (release groups) named [album] by [artist], best first. */
+    suspend fun searchReleaseGroups(album: String, artist: String, limit: Int = 5): List<MbReleaseGroup> {
+        val q = "releasegroup:\"${escape(album)}\" AND artist:\"${escape(artist)}\""
+        val body = get("/ws/2/release-group", listOf("query" to q, "limit" to limit.toString())) ?: return emptyList()
+        return json.decodeFromString<MbReleaseGroupSearch>(body).releaseGroups
     }
 
     /** The most voted genre of a recording, else of its artist; null when MusicBrainz has none. */

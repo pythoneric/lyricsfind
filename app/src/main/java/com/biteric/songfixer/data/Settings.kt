@@ -15,6 +15,8 @@ data class SettingsState(
     val addLyrics: Boolean = true,
     /** Also save them as a .lrc file next to the song (always done for formats without a lyrics tag). */
     val lrcFiles: Boolean = false,
+    /** Put the album cover (Cover Art Archive) into the file when it has none. */
+    val addCover: Boolean = true,
 )
 
 class Settings(context: Context) {
@@ -30,6 +32,7 @@ class Settings(context: Context) {
         renameFiles = prefs.getBoolean("rename_files", true),
         addLyrics = prefs.getBoolean("add_lyrics", true),
         lrcFiles = prefs.getBoolean("lrc_files", false),
+        addCover = prefs.getBoolean("add_cover", true),
     )
 
     fun update(change: (SettingsState) -> SettingsState) {
@@ -41,6 +44,7 @@ class Settings(context: Context) {
             .putBoolean("rename_files", s.renameFiles)
             .putBoolean("add_lyrics", s.addLyrics)
             .putBoolean("lrc_files", s.lrcFiles)
+            .putBoolean("add_cover", s.addCover)
             .apply()
         _state.value = s.copy(acoustIdKey = s.acoustIdKey.trim())
     }

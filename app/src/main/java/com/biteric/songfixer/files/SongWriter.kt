@@ -10,6 +10,10 @@ import kotlinx.coroutines.withContext
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
 import org.jaudiotagger.tag.TagOptionSingleton
+import org.jaudiotagger.tag.images.AndroidArtwork
+import org.jaudiotagger.tag.reference.PictureTypes
+import android.graphics.BitmapFactory
+import com.biteric.songfixer.online.CoverImage
 import java.io.File
 
 /** The names to give a song. Blank fields are left as they are in the file. */
@@ -34,10 +38,19 @@ class SongWriter(private val context: Context) {
      * which a folder permission doesn't always allow).
      *
      * [lyrics] go into the lyrics tag unless the file already has lyrics (or [replaceLyrics]). Returns what happened
-     * to them: [EmbedResult.ADDED], [EmbedResult.HAD_LYRICS], or [EmbedResult.UNSUPPORTED] when
-     * this format has no lyrics tag (null when no lyrics were given).
+     * to them: [EmbedResult.ADDED], [EmbedResult.KEPT_EXISTING], or [EmbedResult.UNSUPPORTED] when
+     * this format has no lyrics tag (null when no lyrics were given). [cover] is the front cover,
+     * kept out the same way when the file has one (unless [replaceCover]).
      */
-    suspend fun writeTags(uri: Uri, extension: String, names: NewNames, lyrics: String? = null, replaceLyrics: Boolean = false): EmbedResult? = withContext(Dispatchers.IO) {
+    suspend fun writeTags(
+        uri: Uri,
+        extension: String,
+        names: NewNames,
+        lyrics: String? = null,
+        replaceLyrics: Boolean = false,
+        cover: CoverImage? = null,
+        replaceCover: Boolean = false,
+    ): Written = withContext(Dispatchers.IO) {
         if (extension !in TAGGABLE) throw Failed("Tags of .$extension files can't be written")
         val dir = File(context.cacheDir, "tag-edit").apply { mkdirs() }
         val copy = File(dir, "edit.$extension")
@@ -58,9 +71,27 @@ class SongWriter(private val context: Context) {
                 lyrics.isNullOrBlank() -> null
                 // Lyrics already there were put there by someone on purpose: keep them, unless the
                 // user picked new ones themselves.
-                !replaceLyrics && runCatching { tag.getFirst(FieldKey.LYRICS) }.getOrNull()?.isNotBlank() == true -> EmbedResult.HAD_LYRICS
+                !replaceLyrics && runCatching { tag.getFirst(FieldKey.LYRICS) }.getOrNull()?.isNotBlank() == true -> EmbedResult.KEPT_EXISTING
                 runCatching { tag.setField(FieldKey.LYRICS, lyrics) }.isSuccess -> EmbedResult.ADDED
                 else -> EmbedResult.UNSUPPORTED
+            }
+            val coverResult = when {
+                cover == null -> null
+                !replaceCover && runCatching { tag.firstArtwork }.getOrNull() != null -> EmbedResult.KEPT_EXISTING
+                else -> runCatching {
+                    val art = AndroidArtwork().apply {
+                        binaryData = cover.bytes
+                        mimeType = cover.mimeType
+                        pictureType = PictureTypes.DEFAULT_ID // front cover
+                        // FLAC stores the size; read it from the image header.
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(cover.bytes, 0, cover.bytes.size, bounds)
+                        width = bounds.outWidth.coerceAtLeast(0)
+                        height = bounds.outHeight.coerceAtLeast(0)
+                    }
+                    tag.deleteArtworkField()
+                    tag.setField(art)
+                }.fold({ EmbedResult.ADDED }, { EmbedResult.UNSUPPORTED })
             }
             runCatching { audio.commit() }.getOrElse { throw Failed("The tags couldn't be written: ${it.message}") }
             // Never copy a damaged file over the song.
@@ -72,13 +103,17 @@ class SongWriter(private val context: Context) {
             // "wt": replace the whole file (plain "w" doesn't shorten it on some Android versions).
             context.contentResolver.openOutputStream(uri, "wt")?.use { out -> copy.inputStream().use { it.copyTo(out) } }
                 ?: throw Failed("The song's file can't be changed")
-            embed
+            Written(embed, coverResult)
         } finally {
             copy.delete()
         }
     }
 
-    enum class EmbedResult { ADDED, HAD_LYRICS, UNSUPPORTED }
+    /** ADDED; KEPT_EXISTING = the file already had one and kept it (lyrics or cover); UNSUPPORTED = no room in this format. */
+    enum class EmbedResult { ADDED, KEPT_EXISTING, UNSUPPORTED }
+
+    /** What happened to the lyrics and the cover (null = none given). */
+    data class Written(val lyrics: EmbedResult?, val cover: EmbedResult?)
 
     /** Renames the file (and its .lrc lyrics file, if there is one); returns its new URI. */
     suspend fun rename(uri: Uri, currentName: String, newName: String): Uri = withContext(Dispatchers.IO) {

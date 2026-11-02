@@ -39,10 +39,31 @@ class LiveCheckTest {
         val match = InstrumentationRegistry.getArguments().getString("lyrics")
         assumeTrue(match != null)
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SongFixerApp
+        assumeTestFolder(app)
         val song = app.repository.songs.first().first { it.fileName.contains(match!!) }
         val applied = app.repository.addLyrics(song)
         Log.i("LiveCheck", "lyrics for ${song.fileName}: ${applied.lyrics} | status ${applied.song.status} | lyricsInFile=${applied.song.lyricsInFile}")
         org.junit.Assert.assertEquals(SongRepository.LyricsOutcome.ADDED, applied.lyrics)
+    }
+
+    /** Adds the album cover only to the songs whose file name contains `-e cover <text>`. */
+    @Test
+    fun addCoverToChosenSong() = runBlocking {
+        val match = InstrumentationRegistry.getArguments().getString("cover")
+        assumeTrue(match != null)
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SongFixerApp
+        assumeTestFolder(app)
+        val song = app.repository.songs.first().first { it.fileName.contains(match!!) }
+        val applied = app.repository.addCover(song)
+        val r = android.media.MediaMetadataRetriever()
+        r.setDataSource(app, android.net.Uri.parse(applied.song.uri))
+        val picture = r.embeddedPicture
+        r.release()
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        picture?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size, bounds) }
+        Log.i("LiveCheck", "cover for ${song.fileName}: ${applied.cover} | picture ${picture?.size ?: 0} bytes, ${bounds.outWidth}x${bounds.outHeight} | hasCover=${applied.song.hasCover}")
+        org.junit.Assert.assertEquals(SongRepository.LyricsOutcome.ADDED, applied.cover)
+        org.junit.Assert.assertTrue(picture != null && bounds.outWidth > 0)
     }
 
     /** Applies the top suggestion to the songs whose file name contains `-e fix <text>`, then re-reads the folder. */
@@ -51,6 +72,7 @@ class LiveCheckTest {
         val match = InstrumentationRegistry.getArguments().getString("fix")
         assumeTrue(match != null)
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SongFixerApp
+        assumeTestFolder(app)
         val song = app.repository.songs.first().first { it.fileName.contains(match!!) && it.best != null }
         val c = song.best!!
         val applied = app.repository.apply(
@@ -70,4 +92,11 @@ class LiveCheckTest {
         Log.i("LiveCheck", "after re-sync: ${after.fileName} ${after.status}")
         org.junit.Assert.assertEquals(com.biteric.songfixer.data.SongStatus.FIXED, after.status)
     }
+
+    /**
+     * Cases that change files run only when the app is pointed at a test folder (its name has
+     * "SongFixerTest" in it), never at someone's real music.
+     */
+    private fun assumeTestFolder(app: SongFixerApp) =
+        assumeTrue(app.settings.current.folderUri?.toString()?.contains("SongFixerTest") == true)
 }
