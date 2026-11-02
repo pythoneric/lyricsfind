@@ -1,0 +1,85 @@
+package com.biteric.songfixer.data
+
+import android.content.Context
+import androidx.room.Dao
+import androidx.room.Database
+import androidx.room.Insert
+import androidx.room.Query
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.room.TypeConverter
+import androidx.room.TypeConverters
+import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.json.Json
+
+data class StatusCount(val status: SongStatus, val count: Int)
+
+@Dao
+interface SongDao {
+    @Query("SELECT * FROM songs ORDER BY folder, fileName COLLATE NOCASE")
+    fun observeAll(): Flow<List<Song>>
+
+    @Query("SELECT status, COUNT(*) AS count FROM songs GROUP BY status")
+    fun observeCounts(): Flow<List<StatusCount>>
+
+    @Query("SELECT * FROM songs")
+    suspend fun all(): List<Song>
+
+    @Query("SELECT * FROM songs WHERE id = :id")
+    suspend fun get(id: Long): Song?
+
+    @Query("SELECT * FROM songs WHERE status = 'NEW' ORDER BY folder, fileName COLLATE NOCASE LIMIT 1")
+    suspend fun nextUnchecked(): Song?
+
+    @Query("SELECT COUNT(*) FROM songs WHERE status = 'NEW'")
+    suspend fun uncheckedCount(): Int
+
+    @Insert
+    suspend fun insert(songs: List<Song>)
+
+    @Update
+    suspend fun update(song: Song)
+
+    @Query("DELETE FROM songs WHERE id IN (:ids)")
+    suspend fun delete(ids: List<Long>)
+
+    @Query("DELETE FROM songs")
+    suspend fun clear()
+
+    /** Check again: everything except songs the user already decided on. */
+    @Query("UPDATE songs SET status = 'NEW' WHERE status NOT IN ('FIXED', 'KEPT')")
+    suspend fun markAllUnchecked()
+
+    @Query("UPDATE songs SET status = 'NEW' WHERE status = 'FAILED'")
+    suspend fun markFailedUnchecked()
+}
+
+class Converters {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    @TypeConverter
+    fun fromCandidates(list: List<Candidate>): String = json.encodeToString(list)
+
+    @TypeConverter
+    fun toCandidates(s: String): List<Candidate> = runCatching { json.decodeFromString<List<Candidate>>(s) }.getOrDefault(emptyList())
+}
+
+@Database(entities = [Song::class], version = 2)
+@TypeConverters(Converters::class)
+abstract class SongDatabase : RoomDatabase() {
+    abstract fun songs(): SongDao
+
+    companion object {
+        /** v2: lyricsInFile. */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) = db.execSQL("ALTER TABLE songs ADD COLUMN lyricsInFile INTEGER DEFAULT NULL")
+        }
+
+        fun create(context: Context) = Room.databaseBuilder(context, SongDatabase::class.java, "songfixer.db")
+            .addMigrations(MIGRATION_1_2)
+            .build()
+    }
+}
