@@ -266,6 +266,9 @@ class SongWriter(private val context: Context) {
         /** Formats jaudiotagger can write. */
         val TAGGABLE = setOf("mp3", "m4a", "mp4", "flac", "ogg", "wav", "wma", "aif", "aiff")
 
+        /** Formats whose tags can hold ReplayGain values here (ID3v2, MP4, FLAC/Vorbis comments); not WAV, WMA or AIFF. */
+        val VOLUME_TAGGABLE = setOf("mp3", "m4a", "mp4", "flac", "ogg")
+
         fun lrcName(songFileName: String) = songFileName.substringBeforeLast('.') + ".lrc"
 
         /** "primary:Music/a.mp3" → "primary:Music" (the root's id is "primary:"). */

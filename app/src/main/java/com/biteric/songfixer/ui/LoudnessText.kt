@@ -71,7 +71,7 @@ fun loudnessSummary(song: Song): String? {
  * follow the setting.
  */
 fun normalizeByDefault(song: Song, normalizeSetting: Boolean): Boolean =
-    song.extension in SongWriter.TAGGABLE && !song.volumeTagsStandard && (normalizeSetting || song.volumeTagsNotStandard)
+    song.extension in SongWriter.VOLUME_TAGGABLE && !song.volumeTagsStandard && (normalizeSetting || song.volumeTagsNotStandard)
 
 /** "−3.1 dB" (a real minus sign). */
 private fun dbText(db: Double) = String.format(Locale.US, "%.1f dB", db).replace('-', '−')
