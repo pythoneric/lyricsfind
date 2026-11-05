@@ -41,8 +41,10 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         } catch (e: AcoustIdKeyException) {
             return Result.failure(workDataOf(KEY_ERROR to (e.message ?: "AcoustID key not accepted")))
         }
-        // Then loudness, one whole song at a time (for volume normalization).
-        if (app.settings.current.normalize) {
+        // Songs checked before years were kept: read their year from the file (quick, no lookups).
+        app.repository.readYears()
+        // Then loudness and the silence at the ends, one whole song at a time (one decode for both).
+        if (app.settings.current.normalize || app.settings.current.trimSilence) {
             val toMeasure = app.repository.unmeasuredCount()
             var measured = 0
             setProgress(workDataOf(KEY_DONE to 0, KEY_TOTAL to toMeasure, KEY_PHASE to PHASE_LOUDNESS))
@@ -65,7 +67,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
         val n = NotificationCompat.Builder(applicationContext, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(if (phase == PHASE_LOUDNESS) "Measuring loudness" else "Checking song names")
+            .setContentTitle(if (phase == PHASE_LOUDNESS) "Measuring loudness and silence" else "Checking song names")
             .setContentText(if (total > 0) "$done of $total" else "Reading the folder…")
             .setProgress(total, done, total == 0)
             .setOngoing(true)

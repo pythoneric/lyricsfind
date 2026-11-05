@@ -147,9 +147,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         addCover: Boolean = false,
         releaseGroupId: String? = null,
         normalize: Boolean = false,
+        trimSilence: Boolean = false,
     ) = work("Couldn't fix ${song.fileName}") {
         // From the sheet, where both covers are shown: a ticked box means the new one is wanted.
-        val done = repo.apply(song, names, writeTags, rename, addLyrics, addCover, releaseGroupId, normalize, replaceCover = addCover)
+        val done = repo.apply(song, names, writeTags, rename, addLyrics, addCover, releaseGroupId, normalize, replaceCover = addCover, trimSilence = trimSilence)
         val what = if (writeTags || rename) "Fixed: ${names.artist} - ${names.title}" else song.fileName
         messageSongId = done.song.id
         _message.value = what + when (done.lyrics) {
@@ -158,7 +159,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             SongRepository.LyricsOutcome.NOT_ONLINE -> " · no lyrics online for it"
             SongRepository.LyricsOutcome.OFFLINE -> " · lyrics site unreachable, try again later"
             SongRepository.LyricsOutcome.NOT_ASKED -> ""
-        } + coverNote(done.cover, hadCover = song.hasCover == true) + volumeNote(done.volume)
+        } + coverNote(done.cover, hadCover = song.hasCover == true) + volumeNote(done.volume) + trimNote(done)
+    }
+
+    private fun trimNote(done: SongRepository.Applied) = when (done.trim) {
+        SongRepository.TrimOutcome.TRIMMED -> " · " + trimmedText(done.trimmed!!)
+        SongRepository.TrimOutcome.NOTHING_TO_CUT -> " · no silence worth cutting"
+        SongRepository.TrimOutcome.FAILED -> " · silence not cut" + (done.trimError?.let { ": $it" } ?: "")
+        SongRepository.TrimOutcome.NOT_ASKED -> ""
+    }
+
+    /** Songs with silence at an end that can be cut. */
+    val toTrim: StateFlow<Int> = repo.songs.map { SongRepository.needTrimming(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    /** Cuts the silence off every song that has some. */
+    fun trimAll() = work("Trimming stopped") {
+        var trimmed = 0
+        var failed = 0
+        for (song in SongRepository.needTrimming(songs.value)) {
+            try {
+                when (repo.trimSilence(song).trim) {
+                    SongRepository.TrimOutcome.TRIMMED -> trimmed++
+                    SongRepository.TrimOutcome.FAILED -> failed++
+                    else -> {}
+                }
+            } catch (e: Exception) {
+                failed++
+            }
+        }
+        _message.value = "Silence cut from $trimmed " + (if (trimmed == 1) "song" else "songs") + if (failed > 0) ", $failed couldn't be trimmed" else ""
+    }
+
+    /** "Trim silence only" in the sheet. */
+    fun trimSilence(song: Song) = work("Couldn't trim it") {
+        val done = repo.trimSilence(song)
+        messageSongId = done.song.id
+        _message.value = song.fileName + trimNote(done)
     }
 
     private fun volumeNote(v: SongRepository.LyricsOutcome) = when (v) {
@@ -222,8 +258,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         var lyrics = 0
         for ((song, c) in repo.sureOnes(songs.value)) {
             try {
-                val names = NewNames(c.title, c.artist, c.album.orEmpty(), c.genre.orEmpty(), c.year?.toString().orEmpty())
-                val done = repo.apply(song, names, s.writeTags && song.extension in SongWriter.TAGGABLE, s.renameFiles, s.addLyrics, s.addCover, c.releaseGroupId, s.normalize)
+                // A song whose only problem is its year gets just the year (no rename, names as they are).
+                val done = repo.apply(song, SongRepository.surePlan(song, c, s))
                 if (done.lyrics == SongRepository.LyricsOutcome.ADDED) lyrics++
                 fixed++
             } catch (e: Exception) {
@@ -231,6 +267,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         _message.value = "Fixed $fixed songs" + (if (s.addLyrics) ", lyrics added to $lyrics" else "") + if (failed > 0) ", $failed couldn't be changed" else ""
+    }
+
+    /** Songs whose names are right and only the year is wrong. */
+    val toCorrectYear: StateFlow<Int> = repo.songs.map { SongRepository.yearOnly(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    /** Writes the match's year into every song whose only problem is the year; nothing else is changed. */
+    fun correctYears() = work("Correcting years stopped") {
+        var done = 0
+        var failed = 0
+        for (song in SongRepository.yearOnly(songs.value)) {
+            try {
+                repo.apply(song, SongRepository.yearOnlyPlan(song, settings.value, extras = false))
+                done++
+            } catch (e: Exception) {
+                failed++
+            }
+        }
+        _message.value = "Year corrected in " + (if (done == 1) "1 song" else "$done songs") + if (failed > 0) ", $failed couldn't be changed" else ""
     }
 
     /** Adds lyrics to the songs that are named right but have none in the file yet. */

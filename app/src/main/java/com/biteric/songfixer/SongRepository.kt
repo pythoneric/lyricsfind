@@ -3,6 +3,7 @@ package com.biteric.songfixer
 import android.net.Uri
 import com.biteric.songfixer.data.Candidate
 import com.biteric.songfixer.data.Settings
+import com.biteric.songfixer.data.SettingsState
 import com.biteric.songfixer.data.Song
 import com.biteric.songfixer.data.SongDao
 import com.biteric.songfixer.data.SongStatus
@@ -71,6 +72,30 @@ class SongRepository(
     suspend fun uncheckedCount() = dao.uncheckedCount()
 
     /**
+     * Reads the year from the files of songs checked before years were kept (no lookups). A song
+     * named right whose file has no year, while its match knows one, becomes something to fix;
+     * other statuses (fixed, kept, suggested…) stay as they are.
+     */
+    suspend fun readYears() {
+        for (song in dao.yearNotRead()) {
+            val year = try {
+                folder.readTags(Uri.parse(song.uri)).year
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                song.year
+            }
+            val status = if (song.status == SongStatus.OK) {
+                Verdict.status(song.title, song.artist, song.album, song.genre, song.candidates, year = year)
+                    .takeIf { it == SongStatus.SUGGESTED } ?: SongStatus.OK
+            } else {
+                song.status
+            }
+            dao.update(song.copy(year = year, yearRead = true, status = status))
+        }
+    }
+
+    /**
      * Checks the next unchecked song; false when there are none left.
      * Throws [AcoustIdKeyException] when the key is refused (the song stays unchecked).
      */
@@ -112,7 +137,7 @@ class SongRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return song.copy(title = tags.title, artist = tags.artist, album = tags.album, genre = tags.genre, durationMs = tags.durationMs, hasCover = tags.hasCover,
+            return song.copy(title = tags.title, artist = tags.artist, album = tags.album, genre = tags.genre, year = tags.year, yearRead = true, durationMs = tags.durationMs, hasCover = tags.hasCover,
                 status = SongStatus.FAILED, note = "Check failed: ${e.message}")
         }
         return song.copy(
@@ -120,8 +145,10 @@ class SongRepository(
             artist = tags.artist,
             album = tags.album,
             genre = tags.genre,
+            year = tags.year,
+            yearRead = true,
             durationMs = tags.durationMs, hasCover = tags.hasCover,
-            status = Verdict.status(tags.title, tags.artist, tags.album, tags.genre, result.candidates),
+            status = Verdict.status(tags.title, tags.artist, tags.album, tags.genre, result.candidates, year = tags.year),
             candidates = result.candidates,
             lyricsFound = result.lyricsFound,
             note = result.note ?: note,
@@ -149,7 +176,14 @@ class SongRepository(
         val cover: LyricsOutcome = LyricsOutcome.NOT_ASKED,
         /** ADDED (ReplayGain tags written), ALREADY_THERE (the file had some), NOT_ONLINE (couldn't measure / format can't hold them). */
         val volume: LyricsOutcome = LyricsOutcome.NOT_ASKED,
+        val trim: TrimOutcome = TrimOutcome.NOT_ASKED,
+        /** What was cut off, when [trim] is TRIMMED. */
+        val trimmed: SongWriter.Trimmed? = null,
+        /** Why it couldn't be trimmed, when [trim] is FAILED. */
+        val trimError: String? = null,
     )
+
+    enum class TrimOutcome { TRIMMED, NOTHING_TO_CUT, FAILED, NOT_ASKED }
 
     /**
      * Writes [names] into the song's tags, renames it to "Artist - Title" and/or adds its lyrics
@@ -169,9 +203,27 @@ class SongRepository(
         normalize: Boolean = false,
         replaceReplayGain: Boolean = false,
         replaceCover: Boolean = false,
+        trimSilence: Boolean = false,
     ): Applied {
         var uri = Uri.parse(song.uri)
         var fileName = song.fileName
+
+        // Silence first: it rewrites the audio, the tags go into the trimmed file after.
+        var trimOutcome = TrimOutcome.NOT_ASKED
+        var trimmed: SongWriter.Trimmed? = null
+        var trimError: String? = null
+        if (trimSilence) {
+            trimOutcome = try {
+                val t = writer.trimSilence(uri, song.extension) { loudness.silence(it) }
+                trimmed = t
+                if (t.startMs + t.endMs > 0) TrimOutcome.TRIMMED else TrimOutcome.NOTHING_TO_CUT
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                trimError = e.message
+                TrimOutcome.FAILED
+            }
+        }
         val title = names.title.ifBlank { song.title.orEmpty() }
         val artist = names.artist.ifBlank { song.artist.orEmpty() }
 
@@ -251,6 +303,8 @@ class SongRepository(
             artist = if (writeTags) names.artist.ifBlank { song.artist } else song.artist,
             album = if (writeTags) names.album.ifBlank { song.album } else song.album,
             genre = if (writeTags) names.genre.ifBlank { song.genre } else song.genre,
+            year = if (writeTags) names.year.trim().toIntOrNull() ?: song.year else song.year,
+            yearRead = writeTags || song.yearRead,
             // Only lyrics or a cover added: the names weren't touched, so the status stays (an
             // unchecked song stays unchecked, one that was already right stays right).
             status = if (!writeTags && !rename) song.status else SongStatus.FIXED,
@@ -264,6 +318,14 @@ class SongRepository(
             replayGainInFile = if (volumeOutcome == LyricsOutcome.ADDED || volumeOutcome == LyricsOutcome.ALREADY_THERE) true else measured.replayGainInFile,
             note = null,
         ).let { s ->
+            val t = trimmed ?: return@let s
+            s.copy(
+                silenceStartMs = t.leadLeftMs,
+                silenceEndMs = t.tailLeftMs,
+                silenceChecked = true,
+                durationMs = s.durationMs?.let { (it - t.startMs - t.endMs).coerceAtLeast(0) },
+            )
+        }.let { s ->
             when {
                 volumeOutcome == LyricsOutcome.ADDED && gain != null -> s.copy(
                     existingTrackGain = ReplayGain.gainText(gain.trackGainDb),
@@ -277,18 +339,38 @@ class SongRepository(
             }
         }
         dao.update(fixed)
-        return Applied(fixed, outcome, coverOutcome, volumeOutcome)
+        return Applied(fixed, outcome, coverOutcome, volumeOutcome, trimOutcome, trimmed, trimError)
     }
 
     /**
      * Measures the next song not measured yet (in the background check), then reads the volume
-     * tags it already has; false when none are left. Songs measured before only get their tags read.
+     * tags it already has; false when none are left. Songs measured before only get their tags read
+     * (and their silence measured, when that's new to them: their loudness stays as measured).
      * A failure is recorded too, so the song isn't tried again by itself.
      */
     suspend fun measureNext(): Boolean {
         val song = dao.nextUnmeasured() ?: return false
-        dao.update(withVolumeTags(if (song.loudnessChecked) song else measure(song)))
+        val measured = when {
+            !song.loudnessChecked -> measure(song)
+            !song.silenceChecked -> measureSilence(song)
+            else -> song
+        }
+        dao.update(withVolumeTags(measured))
         return true
+    }
+
+    /** The song with the silence at its ends filled in (not saved). */
+    private suspend fun measureSilence(song: Song): Song = try {
+        val s = loudness.silence(Uri.parse(song.uri))
+        song.copy(
+            silenceStartMs = if (s.silent) null else s.leadMs,
+            silenceEndMs = if (s.silent) null else s.tailMs,
+            silenceChecked = true,
+        )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        song.copy(silenceStartMs = null, silenceEndMs = null, silenceChecked = true)
     }
 
     /** The song with the volume tags in its file and their verdict against its measurement (not saved). */
@@ -311,15 +393,30 @@ class SongRepository(
 
     suspend fun unmeasuredCount() = dao.unmeasuredCount()
 
-    /** The song with its loudness, true peak and track gain filled in (not saved). */
+    /** The song with its loudness, true peak, track gain and silence at the ends filled in (not saved). One decode for all. */
     private suspend fun measure(song: Song): Song = try {
-        val l = loudness.measure(Uri.parse(song.uri))
-        song.copy(loudnessLufs = l.lufs, trackGainDb = l.trackGainDb, truePeak = l.truePeak, loudnessChecked = true)
+        val a = loudness.analyze(Uri.parse(song.uri))
+        val l = a.loudness
+        val quiet = a.silence.silent
+        song.copy(
+            loudnessLufs = l?.lufs, trackGainDb = l?.trackGainDb, truePeak = l?.truePeak, loudnessChecked = true,
+            // A song with no sound at all: nothing to trim (it would cut the whole song).
+            silenceStartMs = if (quiet) null else a.silence.leadMs,
+            silenceEndMs = if (quiet) null else a.silence.tailMs,
+            silenceChecked = true,
+        )
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        song.copy(loudnessLufs = null, trackGainDb = null, truePeak = null, loudnessChecked = true)
+        song.copy(
+            loudnessLufs = null, trackGainDb = null, truePeak = null, loudnessChecked = true,
+            silenceStartMs = null, silenceEndMs = null, silenceChecked = true,
+        )
     }
+
+    /** Cuts the silence off the song's ends only, names untouched. */
+    suspend fun trimSilence(song: Song): Applied =
+        apply(song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = false, trimSilence = true)
 
     /** Writes ReplayGain tags only, names untouched; existing tags stay if they follow the standard. */
     suspend fun normalize(song: Song): Applied =
@@ -380,10 +477,67 @@ class SongRepository(
         return saved
     }
 
+    /** Runs a [FixPlan] on the song. */
+    suspend fun apply(song: Song, plan: FixPlan): Applied =
+        apply(song, plan.names, plan.writeTags, plan.rename, plan.addLyrics, plan.addCover, plan.releaseGroupId, plan.normalize, trimSilence = plan.trimSilence)
+
+    /** What a fix does: the names to write (blank = leave as is) and what else it changes. */
+    data class FixPlan(
+        val names: NewNames,
+        val writeTags: Boolean,
+        val rename: Boolean,
+        val addLyrics: Boolean,
+        val addCover: Boolean,
+        val releaseGroupId: String?,
+        val normalize: Boolean,
+        val trimSilence: Boolean = false,
+    )
+
     companion object {
+        /** The song's names are right and only its year is wrong (missing or not the match's). */
+        fun isYearOnly(song: Song): Boolean =
+            song.status == SongStatus.SUGGESTED && song.extension in SongWriter.TAGGABLE &&
+                Verdict.onlyYearWrong(song.title, song.artist, song.album, song.genre, song.year, song.candidates)
+
+        /** The year [song] should have, when its names are right by a good match ([Verdict.correctYear]). */
+        fun correctYear(song: Song): Int? = Verdict.correctYear(song.title, song.artist, song.year, song.candidates)
+
+        /** Songs whose only problem is the year, for "Correct year in N songs". */
+        fun yearOnly(songs: List<Song>): List<Song> = songs.filter(::isYearOnly)
+
+        /**
+         * A year-only fix: the year, and nothing else of the names, no rename. With [extras], the
+         * lyrics, cover and volume tags the settings add on every fix come along (as in "Fix N sure ones").
+         */
+        fun yearOnlyPlan(song: Song, settings: SettingsState, extras: Boolean, writeTags: Boolean = true): FixPlan = FixPlan(
+            names = NewNames("", "", "", "", correctYear(song)?.toString().orEmpty()),
+            writeTags = writeTags && song.extension in SongWriter.TAGGABLE,
+            rename = false,
+            addLyrics = extras && settings.addLyrics,
+            addCover = extras && settings.addCover,
+            releaseGroupId = song.best?.releaseGroupId,
+            normalize = extras && settings.normalize,
+            trimSilence = extras && settings.trimSilence && song.hasSilenceToTrim,
+        )
+
+        /** How "Fix N sure ones" fixes [song] with its sure match [c]: the whole match, or only the year when that's all that's wrong. */
+        fun surePlan(song: Song, c: Candidate, settings: SettingsState): FixPlan =
+            if (isYearOnly(song)) {
+                yearOnlyPlan(song, settings, extras = true, writeTags = settings.writeTags)
+            } else {
+                FixPlan(
+                    NewNames(c.title, c.artist, c.album.orEmpty(), c.genre.orEmpty(), c.year?.toString().orEmpty()),
+                    settings.writeTags && song.extension in SongWriter.TAGGABLE, settings.renameFiles, settings.addLyrics, settings.addCover,
+                    c.releaseGroupId, settings.normalize, settings.trimSilence && song.hasSilenceToTrim,
+                )
+            }
+
         /** Songs measured, whose files can take ReplayGain tags and don't have standard ones yet. */
         fun needNormalizing(songs: List<Song>): List<Song> =
             songs.filter { it.loudnessLufs != null && !it.volumeTagsStandard && it.extension in SongWriter.TAGGABLE }
+
+        /** Songs measured with enough silence at an end to cut, in a format that can be cut. */
+        fun needTrimming(songs: List<Song>): List<Song> = songs.filter { it.hasSilenceToTrim }
 
         fun rankLyrics(results: List<LrclibTrack>, durationSec: Int?): List<LrclibTrack> = results
             .filter { LyricsFinder.text(it) != null }

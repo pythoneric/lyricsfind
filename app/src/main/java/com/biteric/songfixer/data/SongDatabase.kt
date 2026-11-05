@@ -56,11 +56,15 @@ interface SongDao {
     @Query("UPDATE songs SET status = 'NEW' WHERE status = 'FAILED'")
     suspend fun markFailedUnchecked()
 
-    /** Not measured yet, or its volume tags not read yet (read again after the file changed). */
-    @Query("SELECT * FROM songs WHERE loudnessChecked = 0 OR gainVerdict IS NULL ORDER BY folder, fileName COLLATE NOCASE LIMIT 1")
+    /** Not measured yet (loudness or silence), or its volume tags not read yet (read again after the file changed). */
+    @Query("SELECT * FROM songs WHERE loudnessChecked = 0 OR silenceChecked = 0 OR gainVerdict IS NULL ORDER BY folder, fileName COLLATE NOCASE LIMIT 1")
     suspend fun nextUnmeasured(): Song?
 
-    @Query("SELECT COUNT(*) FROM songs WHERE loudnessChecked = 0 OR gainVerdict IS NULL")
+    /** Checked before years were kept: their year is read from the file once. */
+    @Query("SELECT * FROM songs WHERE yearRead = 0 AND status != 'NEW'")
+    suspend fun yearNotRead(): List<Song>
+
+    @Query("SELECT COUNT(*) FROM songs WHERE loudnessChecked = 0 OR silenceChecked = 0 OR gainVerdict IS NULL")
     suspend fun unmeasuredCount(): Int
 }
 
@@ -74,7 +78,7 @@ class Converters {
     fun toCandidates(s: String): List<Candidate> = runCatching { json.decodeFromString<List<Candidate>>(s) }.getOrDefault(emptyList())
 }
 
-@Database(entities = [Song::class], version = 5)
+@Database(entities = [Song::class], version = 7)
 @TypeConverters(Converters::class)
 abstract class SongDatabase : RoomDatabase() {
     abstract fun songs(): SongDao
@@ -111,8 +115,25 @@ abstract class SongDatabase : RoomDatabase() {
             }
         }
 
+        /** v6: the year in the file. */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE songs ADD COLUMN year INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN yearRead INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** v7: the silence at the song's start and end. */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE songs ADD COLUMN silenceStartMs INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN silenceEndMs INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN silenceChecked INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         /** Every migration, oldest first (also for the migration test). */
-        internal val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+        internal val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
 
         fun create(context: Context) = Room.databaseBuilder(context, SongDatabase::class.java, "songfixer.db")
             .addMigrations(*MIGRATIONS)

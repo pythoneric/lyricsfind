@@ -5,8 +5,50 @@ import com.biteric.songfixer.files.SongWriter
 import com.biteric.songfixer.loudness.GainVerdict
 import com.biteric.songfixer.loudness.ReplayGain
 import com.biteric.songfixer.loudness.ReplayGainCheck
+import com.biteric.songfixer.loudness.SilenceDetector
 import java.util.Locale
 import kotlin.math.abs
+
+/** "1.8 s" / "450 ms". */
+fun secondsText(ms: Long): String = if (ms < 1000) "$ms ms" else String.format(Locale.US, "%.1f s", ms / 1000.0)
+
+/** "1.8 s at the start · 3.2 s at the end", "none"; null when not measured. */
+fun silenceSummary(song: Song): String? {
+    val lead = song.silenceStartMs ?: return null
+    val tail = song.silenceEndMs ?: return null
+    val parts = listOfNotNull(
+        "${secondsText(lead)} at the start".takeIf { lead >= SilenceDetector.MIN_TRIM_MS },
+        "${secondsText(tail)} at the end".takeIf { tail >= SilenceDetector.MIN_TRIM_MS },
+    )
+    return parts.joinToString(" · ").ifEmpty { "none to cut" }
+}
+
+/** "cut 1.8 s of silence at the start and 3.2 s at the end" after a trim. */
+fun trimmedText(t: SongWriter.Trimmed): String = "cut " + silenceAtEnds(t.startMs, t.endMs, minMs = 1)
+
+/** "1.8 s of silence at the start and 3.2 s at the end" (ends with less than [minMs] left out). */
+fun silenceAtEnds(leadMs: Long, tailMs: Long, minMs: Long = SilenceDetector.MIN_TRIM_MS): String {
+    val lead = leadMs >= minMs
+    val tail = tailMs >= minMs
+    return when {
+        lead && tail -> "${secondsText(leadMs)} of silence at the start and ${secondsText(tailMs)} at the end"
+        lead -> "${secondsText(leadMs)} of silence at the start"
+        tail -> "${secondsText(tailMs)} of silence at the end"
+        else -> "no silence"
+    }
+}
+
+/** For the list: "Silence at start", "… at end", "… at both ends"; null when none to cut. */
+fun silenceChip(song: Song): String? {
+    if (!song.hasSilenceToTrim) return null
+    val lead = (song.silenceStartMs ?: 0) >= SilenceDetector.MIN_TRIM_MS
+    val tail = (song.silenceEndMs ?: 0) >= SilenceDetector.MIN_TRIM_MS
+    return when {
+        lead && tail -> "Silence at both ends"
+        lead -> "Silence at start"
+        else -> "Silence at end"
+    }
+}
 
 /** "−9.8 LUFS" (a real minus sign). */
 fun loudnessText(lufs: Double): String = String.format(Locale.US, "%.1f LUFS", lufs).replace('-', '−')

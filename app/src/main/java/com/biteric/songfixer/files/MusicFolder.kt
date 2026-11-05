@@ -12,7 +12,15 @@ import kotlinx.coroutines.withContext
 data class FoundFile(val uri: Uri, val name: String, val folder: String, val size: Long, val modified: Long)
 
 /** Tags as Android reads them, plus the length. */
-data class ReadTags(val title: String?, val artist: String?, val album: String?, val genre: String?, val durationMs: Long?, val hasCover: Boolean = false)
+data class ReadTags(
+    val title: String?,
+    val artist: String?,
+    val album: String?,
+    val genre: String?,
+    val durationMs: Long?,
+    val hasCover: Boolean = false,
+    val year: Int? = null,
+)
 
 /** The folder the user picked (Storage Access Framework tree): lists songs and reads their tags. */
 class MusicFolder(private val context: Context) {
@@ -54,11 +62,16 @@ class MusicFolder(private val context: Context) {
                 genre = get(MediaMetadataRetriever.METADATA_KEY_GENRE)?.let(::genreName),
                 durationMs = get(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull(),
                 hasCover = r.embeddedPicture != null,
+                // MP3s: from the tag itself (Android misses the ID3v2.4 year); others as Android reads them.
+                year = id3Year(uri) ?: parseYear(get(MediaMetadataRetriever.METADATA_KEY_YEAR)) ?: parseYear(get(MediaMetadataRetriever.METADATA_KEY_DATE)),
             )
         } finally {
             r.release()
         }
     }
+
+    private fun id3Year(uri: Uri): Int? =
+        runCatching { context.contentResolver.openInputStream(uri)?.use { it.buffered().let(Id3Year::read) } }.getOrNull()
 
     companion object {
         val EXTENSIONS = setOf("mp3", "m4a", "aac", "flac", "ogg", "oga", "opus", "wav", "wma", "aif", "aiff")
@@ -66,6 +79,13 @@ class MusicFolder(private val context: Context) {
         /** By extension: providers report odd MIME types for music (e.g. application/octet-stream). */
         @Suppress("UNUSED_PARAMETER")
         fun isMusic(name: String, mime: String): Boolean = name.substringAfterLast('.', "").lowercase() in EXTENSIONS
+
+        /**
+         * The year in a tag as Android reports it: "2019", "2019-05-17", "20190517T000000.000Z";
+         * null for nothing or a year that can't be right ("0").
+         */
+        fun parseYear(text: String?): Int? =
+            text?.trim()?.let { Regex("""^(\d{4})""").find(it) }?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 1000..2999 }
 
         /** ID3v1 genre numbers ("(17)", "17") as some files store them; Android passes those through. */
         fun genreName(raw: String): String? {

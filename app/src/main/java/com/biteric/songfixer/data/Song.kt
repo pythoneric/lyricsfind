@@ -59,6 +59,10 @@ data class Song(
     val artist: String? = null,
     val album: String? = null,
     val genre: String? = null,
+    /** The year in the file's tags; null = none (or not read yet, see [yearRead]). */
+    val year: Int? = null,
+    /** [year] was read from the file (songs checked before years were kept get it read once). */
+    val yearRead: Boolean = false,
     val status: SongStatus = SongStatus.NEW,
     /** Best first. */
     val candidates: List<Candidate> = emptyList(),
@@ -85,7 +89,17 @@ data class Song(
     val existingReference: String? = null,
     /** What those tags are worth; null = not read yet. */
     val gainVerdict: GainVerdict? = null,
+    /** Silence before the first sound / after the last one, ms; null = not measured. */
+    val silenceStartMs: Long? = null,
+    val silenceEndMs: Long? = null,
+    /** The silence was measured (also when it failed), so it isn't tried again by itself. */
+    val silenceChecked: Boolean = false,
 ) {
+    /** Enough silence at an end to be worth cutting, in a format that can be cut. */
+    val hasSilenceToTrim: Boolean
+        get() = extension in com.biteric.songfixer.files.SilenceTrimmer.FORMATS &&
+            com.biteric.songfixer.files.SilenceTrimmer.worthIt(silenceStartMs, silenceEndMs)
+
     /**
      * The file's volume tags follow ReplayGain 2.0, so they're left alone. Before tags were read
      * (older databases), tags the app wrote itself count.

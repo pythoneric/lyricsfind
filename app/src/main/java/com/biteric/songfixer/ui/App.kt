@@ -27,7 +27,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.PlayCircle
@@ -75,6 +77,8 @@ fun App(vm: MainViewModel = viewModel()) {
     val busy by vm.busy.collectAsStateWithLifecycle()
     val lyricsToAdd by vm.lyricsToAdd.collectAsStateWithLifecycle()
     val toNormalize by vm.toNormalize.collectAsStateWithLifecycle()
+    val toCorrectYear by vm.toCorrectYear.collectAsStateWithLifecycle()
+    val toTrim by vm.toTrim.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var openSongId by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -145,6 +149,10 @@ fun App(vm: MainViewModel = viewModel()) {
                     onAddAllLyrics = vm::addLyricsToAll,
                     toNormalize = if (settings.normalize) toNormalize else 0,
                     onNormalizeAll = vm::normalizeAll,
+                    toCorrectYear = toCorrectYear,
+                    onCorrectYears = vm::correctYears,
+                    toTrim = if (settings.trimSilence) toTrim else 0,
+                    onTrimAll = vm::trimAll,
                     onPlay = { playInBitEric(context, it) },
                     onOpen = { openSongId = it.id },
                     onSettings = { showSettings = true },
@@ -160,8 +168,9 @@ fun App(vm: MainViewModel = viewModel()) {
             settings = settings,
             busy = busy,
             onDismiss = { openSongId = null; lyricsDialog = null },
-            onApply = { names, tags, rename, lyrics, cover, rgId, normalize -> vm.apply(open, names, tags, rename, lyrics, cover, rgId, normalize); openSongId = null },
+            onApply = { names, tags, rename, lyrics, cover, rgId, normalize, trim -> vm.apply(open, names, tags, rename, lyrics, cover, rgId, normalize, trim); openSongId = null },
             onNormalize = { vm.normalize(open); openSongId = null },
+            onTrimSilence = { vm.trimSilence(open); openSongId = null },
             onRemeasure = { vm.remeasure(open); openSongId = null },
             onAddLyrics = { vm.addLyrics(open); openSongId = null },
             onAddCover = { vm.addCover(open); openSongId = null },
@@ -260,6 +269,10 @@ private fun SongList(
     lyricsToAdd: Int,
     toNormalize: Int,
     onNormalizeAll: () -> Unit,
+    toCorrectYear: Int,
+    onCorrectYears: () -> Unit,
+    toTrim: Int,
+    onTrimAll: () -> Unit,
     onAddAllLyrics: () -> Unit,
     onPlay: (Song) -> Unit,
     onOpen: (Song) -> Unit,
@@ -287,7 +300,7 @@ private fun SongList(
                         Text(
                             when {
                                 check.total == 0 -> "Reading the folder…"
-                                check.measuring -> "Measuring loudness ${check.done} of ${check.total}…"
+                                check.measuring -> "Measuring loudness and silence ${check.done} of ${check.total}…"
                                 else -> "Checking ${check.done} of ${check.total}…"
                             },
                             style = MaterialTheme.typography.bodyMedium,
@@ -309,11 +322,25 @@ private fun SongList(
                             Button(onClick = onStart) { Text(if (songs.isEmpty()) "Check songs" else "Check new songs") }
                             if (sure > 0) OutlinedButton(onClick = onFixAllSure, enabled = !busy) { Text("Fix $sure sure ones") }
                         }
+                        if (toCorrectYear > 0) {
+                            OutlinedButton(onClick = onCorrectYears, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) {
+                                Icon(Icons.Default.CalendarMonth, contentDescription = null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (toCorrectYear == 1) "Correct year in 1 song" else "Correct year in $toCorrectYear songs")
+                            }
+                        }
                         if (toNormalize > 0) {
                             OutlinedButton(onClick = onNormalizeAll, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) {
                                 Icon(Icons.Default.GraphicEq, contentDescription = null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text(if (toNormalize == 1) "Normalize 1 song" else "Normalize $toNormalize songs")
+                            }
+                        }
+                        if (toTrim > 0) {
+                            OutlinedButton(onClick = onTrimAll, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) {
+                                Icon(Icons.Default.ContentCut, contentDescription = null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (toTrim == 1) "Trim silence in 1 song" else "Trim silence in $toTrim songs")
                             }
                         }
                         if (lyricsToAdd > 0) {
@@ -420,6 +447,8 @@ private fun SongRowText(song: Song, modifier: Modifier) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             statusLabel(song)?.let { SmallChip(it) }
             loudnessChip(song)?.let { SmallChip(it) }
+            yearChip(song)?.let { SmallChip(it) }
+            silenceChip(song)?.let { SmallChip(it) }
             if (song.status == SongStatus.SUGGESTED && best != null) SmallChip(if (best.sure) "Sure match" else "Check it")
             when {
                 song.lyricsInFile == true -> SmallChip("Lyrics in file", icon = true)

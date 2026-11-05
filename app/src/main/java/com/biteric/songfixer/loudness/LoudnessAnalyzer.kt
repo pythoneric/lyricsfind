@@ -27,12 +27,18 @@ object ReplayGain {
     fun referenceText() = String.format(Locale.US, "%.2f LUFS", REFERENCE_LUFS)
 }
 
+/** One pass over a song: its loudness (null when silent) and the silence at its ends. */
+data class Analysis(val loudness: Loudness?, val silence: Silence)
+
 /** Decodes a whole song and measures it. */
 class LoudnessAnalyzer(context: Context) {
     private val decoder = PcmDecoder(context)
 
-    suspend fun measure(uri: Uri): Loudness {
+    suspend fun measure(uri: Uri): Loudness = analyze(uri).loudness ?: throw IOException("The song is silent")
+
+    suspend fun analyze(uri: Uri): Analysis {
         var meter: LoudnessMeter? = null
+        var detector: SilenceDetector? = null
         var channels = 1
         // Up to 2 channels count; downmixed input keeps the frame layout.
         var buf = FloatArray(0)
@@ -41,10 +47,12 @@ class LoudnessAnalyzer(context: Context) {
                 channels = channelCount
                 // A format change midway restarts the measurement (rare; keeps the result honest).
                 meter = LoudnessMeter(sampleRate, channelCount.coerceAtMost(LoudnessMeter.MAX_CHANNELS))
+                detector = SilenceDetector(sampleRate, channelCount)
             }
 
             override fun pcm(samples: FloatArray, frames: Int) {
                 val m = meter ?: return
+                detector?.feed(samples, frames)
                 if (channels <= LoudnessMeter.MAX_CHANNELS) return m.feed(samples, frames)
                 // More than two channels: the first two.
                 if (buf.size < frames * 2) buf = FloatArray(frames * 2)
@@ -56,7 +64,22 @@ class LoudnessAnalyzer(context: Context) {
             }
         })
         val m = meter ?: throw IOException("The audio couldn't be decoded")
-        val lufs = m.integratedLoudness() ?: throw IOException("The song is silent")
-        return Loudness(lufs, m.truePeak())
+        val lufs = m.integratedLoudness()
+        return Analysis(lufs?.let { Loudness(it, m.truePeak()) }, detector!!.result())
+    }
+
+    /** Only where the sound starts and ends. */
+    suspend fun silence(uri: Uri): Silence {
+        var detector: SilenceDetector? = null
+        decoder.decode(uri, object : PcmSink {
+            override fun start(sampleRate: Int, channels: Int) {
+                detector = SilenceDetector(sampleRate, channels)
+            }
+
+            override fun pcm(samples: FloatArray, frames: Int) {
+                detector?.feed(samples, frames)
+            }
+        })
+        return detector?.result() ?: throw IOException("The audio couldn't be decoded")
     }
 }

@@ -11,10 +11,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.maxLength
+import androidx.compose.foundation.text.input.then
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
@@ -32,6 +37,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextFieldLabelPosition
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.biteric.songfixer.data.Candidate
 import com.biteric.songfixer.data.MatchSource
@@ -52,6 +59,7 @@ import com.biteric.songfixer.data.Song
 import com.biteric.songfixer.data.SongStatus
 import com.biteric.songfixer.files.NewNames
 import com.biteric.songfixer.files.SongWriter
+import com.biteric.songfixer.files.SilenceTrimmer
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -61,8 +69,9 @@ fun SongSheet(
     settings: SettingsState,
     busy: Boolean,
     onDismiss: () -> Unit,
-    onApply: (NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean, addCover: Boolean, releaseGroupId: String?, normalize: Boolean) -> Unit,
+    onApply: (NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean, addCover: Boolean, releaseGroupId: String?, normalize: Boolean, trimSilence: Boolean) -> Unit,
     onNormalize: () -> Unit,
+    onTrimSilence: () -> Unit,
     onRemeasure: () -> Unit,
     onAddLyrics: () -> Unit,
     onAddCover: () -> Unit,
@@ -99,10 +108,16 @@ fun SongSheet(
             Field("Artist", song.artist)
             Field("Album", song.album)
             Field("Genre", song.genre)
+            Field("Year", song.year?.toString() ?: if (!song.yearRead && song.status != SongStatus.NEW) "not read yet" else null)
             Field(
                 "Volume",
                 loudnessSummary(song)
                     ?: if (song.loudnessChecked) "couldn't be measured" else "not measured yet",
+            )
+            Field(
+                "Silence",
+                silenceSummary(song)
+                    ?: if (song.silenceChecked) "couldn't be measured" else "not measured yet",
             )
             song.note?.let {
                 Spacer(Modifier.height(6.dp))
@@ -165,17 +180,35 @@ fun SongSheet(
 
             Spacer(Modifier.height(16.dp))
             Section("Fix")
-            // Start from the chosen suggestion; keep what the file has where the suggestion has nothing.
-            var title by remember(song.id, candidate) { mutableStateOf(candidate?.title ?: song.title.orEmpty()) }
-            var artist by remember(song.id, candidate) { mutableStateOf(candidate?.artist ?: song.artist.orEmpty()) }
-            var album by remember(song.id, candidate) { mutableStateOf(candidate?.album ?: song.album.orEmpty()) }
-            var genre by remember(song.id, candidate) { mutableStateOf(candidate?.genre ?: song.genre.orEmpty()) }
+            // Start from the chosen suggestion (keeping what the file has where it has nothing), or, when only
+            // the year is wrong, from the file's own names: then Fix changes the year alone.
+            val start = remember(song.id, candidate) { fixStart(song, candidate, settings.renameFiles, settings.addCover) }
+            val titleField = remember(start) { TextFieldState(start.title) }
+            val artistField = remember(start) { TextFieldState(start.artist) }
+            val albumField = remember(start) { TextFieldState(start.album) }
+            val genreField = remember(start) { TextFieldState(start.genre) }
+            val yearField = remember(start) { TextFieldState(start.year) }
+            val title = titleField.text.toString()
+            val artist = artistField.text.toString()
+            val album = albumField.text.toString()
+            val genre = genreField.text.toString()
+            val year = yearField.text.toString()
+            val yearProblem = yearProblem(year)
             var writeTags by remember(song.id) { mutableStateOf(settings.writeTags && song.extension in SongWriter.TAGGABLE) }
-            var rename by remember(song.id) { mutableStateOf(settings.renameFiles) }
-            Edit("Title", title) { title = it }
-            Edit("Artist", artist) { artist = it }
-            Edit("Album", album) { album = it }
-            Edit("Genre", genre) { genre = it }
+            var rename by remember(start) { mutableStateOf(start.rename) }
+            Edit("Title", titleField)
+            Edit("Artist", artistField)
+            Edit("Album", albumField)
+            Edit("Genre", genreField)
+            Edit(
+                "Year", yearField,
+                problem = yearProblem,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                // Digits only, at most four.
+                inputTransformation = InputTransformation.maxLength(4).then {
+                    if (!asCharSequence().all(Char::isDigit)) revertAllChanges()
+                },
+            )
             CheckRow(
                 "Write tags into the file",
                 if (song.extension in SongWriter.TAGGABLE) null else ".${song.extension} files can't be tagged here",
@@ -197,7 +230,7 @@ fun SongSheet(
             // Cover: the one in the file now next to the album's front cover (from the chosen match's
             // album, or a search by album name). Ticked = the new one goes in, also over an old one.
             val canCover = song.extension in SongWriter.TAGGABLE
-            var addCover by remember(song.id) { mutableStateOf(settings.addCover && canCover) }
+            var addCover by remember(start) { mutableStateOf(start.addCover && canCover) }
             CheckRow(
                 "Add cover art",
                 coverDetail(song, addCover),
@@ -239,15 +272,30 @@ fun SongSheet(
                 enabled = canNormalize && !song.volumeTagsStandard,
             ) { normalize = it }
 
+            // Silence at the ends: cut off (the audio in between isn't re-encoded), so the song mixes without a gap.
+            val canTrim = song.extension in SilenceTrimmer.FORMATS
+            var trim by remember(song.id) { mutableStateOf(settings.trimSilence && song.hasSilenceToTrim) }
+            CheckRow(
+                "Trim silence",
+                when {
+                    !canTrim -> ".${song.extension} files can't be trimmed here (MP3, FLAC and WAV can)"
+                    song.hasSilenceToTrim ->
+                        "Cuts its ${silenceAtEnds(song.silenceStartMs ?: 0, song.silenceEndMs ?: 0)}, so it mixes without a gap; nothing is re-encoded"
+                    song.silenceChecked -> "No silence worth cutting at either end"
+                    else -> "Finds the silence at the start and end and cuts it; nothing is re-encoded"
+                },
+                trim,
+                enabled = canTrim && (song.hasSilenceToTrim || !song.silenceChecked),
+            ) { trim = it }
+
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = {
-                        val year = candidate?.year?.takeIf { candidate.title == title && candidate.artist == artist }?.toString().orEmpty()
                         val rgId = candidate?.releaseGroupId?.takeIf { candidate.album == album }
-                        onApply(NewNames(title, artist, album, genre, year), writeTags, rename, addLyrics, addCover, rgId, normalize)
+                        onApply(NewNames(title, artist, album, genre, year.trim()), writeTags, rename, addLyrics, addCover, rgId, normalize, trim)
                     },
-                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && (writeTags || rename || addLyrics || addCover || normalize),
+                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && yearProblem == null && (writeTags || rename || addLyrics || addCover || normalize || trim),
                 ) { Text("Fix") }
                 if (song.status != SongStatus.KEPT && song.status != SongStatus.FIXED) TextButton(onClick = onKeep) { Text("Keep as is") }
                 TextButton(onClick = onRecheck) { Text("Check again") }
@@ -269,6 +317,9 @@ fun SongSheet(
                     // Measures again and replaces volume tags, the app's or another program's.
                     TextButton(onClick = onRemeasure, enabled = !busy) { Text("Re-measure") }
                 }
+            }
+            if (song.hasSilenceToTrim && song.status != SongStatus.NEW) {
+                TextButton(onClick = onTrimSilence, enabled = !busy) { Text("Trim silence only") }
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -319,9 +370,28 @@ private fun Field(label: String, value: String?) {
 
 
 @Composable
-private fun Edit(label: String, value: String, onChange: (String) -> Unit) {
-    OutlinedTextField(value, onChange, Modifier.fillMaxWidth().padding(vertical = 2.dp), label = { Text(label) }, singleLine = true)
+private fun Edit(
+    label: String,
+    state: TextFieldState,
+    problem: String? = null,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    inputTransformation: InputTransformation? = null,
+) {
+    OutlinedTextField(
+        state,
+        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        labelPosition = FIELD_LABEL,
+        label = { Text(label) },
+        isError = problem != null,
+        supportingText = problem?.let { { Text(it) } },
+        keyboardOptions = keyboardOptions,
+        inputTransformation = inputTransformation,
+        lineLimits = TextFieldLineLimits.SingleLine,
+    )
 }
+
+/** Field names stay on the border, also over an empty field (like a missing year), so every field reads alike. */
+private val FIELD_LABEL = TextFieldLabelPosition.Attached(alwaysMinimize = true)
 
 /** A cover to pick, with its label under it; the picked one is outlined. */
 @Composable

@@ -9,7 +9,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
+import org.jaudiotagger.audio.mp3.MP3File
 import org.jaudiotagger.tag.TagOptionSingleton
+import org.jaudiotagger.tag.id3.ID3v23Tag
+import org.jaudiotagger.tag.id3.ID3v24Tag
+import org.jaudiotagger.tag.reference.ID3V2Version
 import org.jaudiotagger.tag.images.AndroidArtwork
 import org.jaudiotagger.tag.reference.PictureTypes
 import android.graphics.BitmapFactory
@@ -18,6 +22,9 @@ import com.biteric.songfixer.loudness.Loudness
 import com.biteric.songfixer.loudness.GainVerdict
 import com.biteric.songfixer.loudness.ReplayGainCheck
 import com.biteric.songfixer.loudness.VolumeTags
+import com.biteric.songfixer.loudness.Silence
+import com.biteric.songfixer.fingerprint.PcmDecoder
+import com.biteric.songfixer.fingerprint.PcmSink
 import java.io.File
 
 /** The names to give a song. Blank fields are left as they are in the file. */
@@ -33,6 +40,8 @@ class SongWriter(private val context: Context) {
         TagOptionSingleton.getInstance().apply {
             isWriteMp3GenresAsText = true
             isWriteMp4GenresAsText = true
+            // New MP3 tags as ID3v2.3: see [asId3v23].
+            setID3V2Version(ID3V2Version.ID3_V23)
         }
     }
 
@@ -65,8 +74,12 @@ class SongWriter(private val context: Context) {
                 ?: throw Failed("The song's file can't be read")
             val audio = runCatching { AudioFileIO.read(copy) }.getOrElse { throw Failed("This file's tags can't be read: ${it.message}") }
             val tag = audio.tagOrCreateAndSetDefault
+            var namesChanged = false
             fun set(key: FieldKey, value: String) {
-                if (value.isNotBlank() && tag.getFirst(key) != value.trim()) tag.setField(key, value.trim())
+                if (value.isNotBlank() && tag.getFirst(key) != value.trim()) {
+                    tag.setField(key, value.trim())
+                    namesChanged = true
+                }
             }
             set(FieldKey.TITLE, names.title)
             set(FieldKey.ARTIST, names.artist)
@@ -111,6 +124,11 @@ class SongWriter(private val context: Context) {
                     .getOrDefault(false) -> EmbedResult.ADDED
                 else -> EmbedResult.UNSUPPORTED
             }
+            // Nothing to change: leave the file as it is (no rewrite, no new tag version).
+            if (!namesChanged && EmbedResult.ADDED !in listOf(embed, coverResult, gainResult)) {
+                return@withContext Written(embed, coverResult, gainResult)
+            }
+            asId3v23(audio)
             runCatching { audio.commit() }.getOrElse { throw Failed("The tags couldn't be written: ${it.message}") }
             // Never copy a damaged file over the song.
             val check = runCatching { AudioFileIO.read(copy) }.getOrNull()
@@ -128,6 +146,16 @@ class SongWriter(private val context: Context) {
     }
 
     /**
+     * MP3s are saved with an ID3v2.3 tag: Android's music library (and so its players) reads the
+     * v2.3 year (TYER) but skips the v2.4 one (TDRC). Every other frame carries over.
+     */
+    private fun asId3v23(audio: org.jaudiotagger.audio.AudioFile) {
+        val mp3 = audio as? MP3File ?: return
+        val v24 = mp3.getID3v2Tag() as? ID3v24Tag ?: return
+        mp3.setID3v2Tag(ID3v23Tag(v24))
+    }
+
+    /**
      * The song's volume tags as they are, read from a copy in the app's cache; empty when the
      * format has none or they can't be read.
      */
@@ -142,6 +170,50 @@ class SongWriter(private val context: Context) {
             runCatching { AudioFileIO.read(copy).tag?.let(ReplayGainTags::volumeTags) }.getOrNull() ?: VolumeTags()
         } finally {
             copy.delete()
+        }
+    }
+
+    /** How much silence was cut off each end, and how much is left there (the margins kept). */
+    data class Trimmed(val startMs: Long, val endMs: Long, val leadLeftMs: Long, val tailLeftMs: Long)
+
+    /**
+     * Cuts the silence off the song's start and end (see [SilenceTrimmer]), on a copy in the app's
+     * cache: [findSilence] listens to that copy, the cut copy must decode and read back, and only
+     * then is it copied over the song. Nothing is cut (0, 0) when there's too little silence to bother.
+     */
+    suspend fun trimSilence(uri: Uri, extension: String, findSilence: suspend (Uri) -> Silence): Trimmed = withContext(Dispatchers.IO) {
+        if (extension !in SilenceTrimmer.FORMATS) throw Failed(".$extension files can't be trimmed here")
+        val dir = File(context.cacheDir, "trim").apply { mkdirs() }
+        val copy = File(dir, "trim.$extension")
+        val cut = File(dir, "cut.$extension")
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input -> copy.outputStream().use { input.copyTo(it) } }
+                ?: throw Failed("The song's file can't be read")
+            val silence = findSilence(Uri.fromFile(copy))
+            val result = try {
+                SilenceTrimmer.cut(copy.readBytes(), extension, silence)
+            } catch (e: SilenceTrimmer.Unsupported) {
+                throw Failed(e.message ?: "This file can't be trimmed")
+            } ?: return@withContext Trimmed(0, 0, silence.leadMs, silence.tailMs)
+            cut.writeBytes(result.bytes)
+            // Never copy a damaged file over the song: it must decode, and its tags still read.
+            runCatching { PcmDecoder(context).decode(Uri.fromFile(cut), object : PcmSink {
+                override fun start(sampleRate: Int, channels: Int) {}
+                override fun pcm(samples: FloatArray, frames: Int) {}
+            }, maxSeconds = 2) }.getOrElse { throw Failed("The trimmed file didn't play back; the song was left as it was") }
+            val before = runCatching { AudioFileIO.read(copy) }.getOrNull()
+            if (before != null && runCatching { AudioFileIO.read(cut) }.isFailure) {
+                throw Failed("The trimmed file's tags didn't read back; the song was left as it was")
+            }
+            context.contentResolver.openOutputStream(uri, "wt")?.use { out -> cut.inputStream().use { it.copyTo(out) } }
+                ?: throw Failed("The song's file can't be changed")
+            Trimmed(
+                result.startMs, result.endMs,
+                (silence.leadMs - result.startMs).coerceAtLeast(0), (silence.tailMs - result.endMs).coerceAtLeast(0),
+            )
+        } finally {
+            copy.delete()
+            cut.delete()
         }
     }
 
