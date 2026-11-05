@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.PlayCircle
@@ -75,6 +76,7 @@ fun App(vm: MainViewModel = viewModel()) {
     val busy by vm.busy.collectAsStateWithLifecycle()
     val lyricsToAdd by vm.lyricsToAdd.collectAsStateWithLifecycle()
     val toNormalize by vm.toNormalize.collectAsStateWithLifecycle()
+    val toCorrectYear by vm.toCorrectYear.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var openSongId by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -145,6 +147,8 @@ fun App(vm: MainViewModel = viewModel()) {
                     onAddAllLyrics = vm::addLyricsToAll,
                     toNormalize = if (settings.normalize) toNormalize else 0,
                     onNormalizeAll = vm::normalizeAll,
+                    toCorrectYear = toCorrectYear,
+                    onCorrectYears = vm::correctYears,
                     onPlay = { playInBitEric(context, it) },
                     onOpen = { openSongId = it.id },
                     onSettings = { showSettings = true },
@@ -260,6 +264,8 @@ private fun SongList(
     lyricsToAdd: Int,
     toNormalize: Int,
     onNormalizeAll: () -> Unit,
+    toCorrectYear: Int,
+    onCorrectYears: () -> Unit,
     onAddAllLyrics: () -> Unit,
     onPlay: (Song) -> Unit,
     onOpen: (Song) -> Unit,
@@ -308,6 +314,13 @@ private fun SongList(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = onStart) { Text(if (songs.isEmpty()) "Check songs" else "Check new songs") }
                             if (sure > 0) OutlinedButton(onClick = onFixAllSure, enabled = !busy) { Text("Fix $sure sure ones") }
+                        }
+                        if (toCorrectYear > 0) {
+                            OutlinedButton(onClick = onCorrectYears, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) {
+                                Icon(Icons.Default.CalendarMonth, contentDescription = null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (toCorrectYear == 1) "Correct year in 1 song" else "Correct year in $toCorrectYear songs")
+                            }
                         }
                         if (toNormalize > 0) {
                             OutlinedButton(onClick = onNormalizeAll, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) {
@@ -420,6 +433,7 @@ private fun SongRowText(song: Song, modifier: Modifier) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             statusLabel(song)?.let { SmallChip(it) }
             loudnessChip(song)?.let { SmallChip(it) }
+            yearChip(song)?.let { SmallChip(it) }
             if (song.status == SongStatus.SUGGESTED && best != null) SmallChip(if (best.sure) "Sure match" else "Check it")
             when {
                 song.lyricsInFile == true -> SmallChip("Lyrics in file", icon = true)

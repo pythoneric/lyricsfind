@@ -3,6 +3,7 @@ package com.biteric.songfixer
 import android.net.Uri
 import com.biteric.songfixer.data.Candidate
 import com.biteric.songfixer.data.Settings
+import com.biteric.songfixer.data.SettingsState
 import com.biteric.songfixer.data.Song
 import com.biteric.songfixer.data.SongDao
 import com.biteric.songfixer.data.SongStatus
@@ -71,6 +72,30 @@ class SongRepository(
     suspend fun uncheckedCount() = dao.uncheckedCount()
 
     /**
+     * Reads the year from the files of songs checked before years were kept (no lookups). A song
+     * named right whose file has no year, while its match knows one, becomes something to fix;
+     * other statuses (fixed, kept, suggested…) stay as they are.
+     */
+    suspend fun readYears() {
+        for (song in dao.yearNotRead()) {
+            val year = try {
+                folder.readTags(Uri.parse(song.uri)).year
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                song.year
+            }
+            val status = if (song.status == SongStatus.OK) {
+                Verdict.status(song.title, song.artist, song.album, song.genre, song.candidates, year = year)
+                    .takeIf { it == SongStatus.SUGGESTED } ?: SongStatus.OK
+            } else {
+                song.status
+            }
+            dao.update(song.copy(year = year, yearRead = true, status = status))
+        }
+    }
+
+    /**
      * Checks the next unchecked song; false when there are none left.
      * Throws [AcoustIdKeyException] when the key is refused (the song stays unchecked).
      */
@@ -112,7 +137,7 @@ class SongRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return song.copy(title = tags.title, artist = tags.artist, album = tags.album, genre = tags.genre, durationMs = tags.durationMs, hasCover = tags.hasCover,
+            return song.copy(title = tags.title, artist = tags.artist, album = tags.album, genre = tags.genre, year = tags.year, yearRead = true, durationMs = tags.durationMs, hasCover = tags.hasCover,
                 status = SongStatus.FAILED, note = "Check failed: ${e.message}")
         }
         return song.copy(
@@ -120,8 +145,10 @@ class SongRepository(
             artist = tags.artist,
             album = tags.album,
             genre = tags.genre,
+            year = tags.year,
+            yearRead = true,
             durationMs = tags.durationMs, hasCover = tags.hasCover,
-            status = Verdict.status(tags.title, tags.artist, tags.album, tags.genre, result.candidates),
+            status = Verdict.status(tags.title, tags.artist, tags.album, tags.genre, result.candidates, year = tags.year),
             candidates = result.candidates,
             lyricsFound = result.lyricsFound,
             note = result.note ?: note,
@@ -251,6 +278,8 @@ class SongRepository(
             artist = if (writeTags) names.artist.ifBlank { song.artist } else song.artist,
             album = if (writeTags) names.album.ifBlank { song.album } else song.album,
             genre = if (writeTags) names.genre.ifBlank { song.genre } else song.genre,
+            year = if (writeTags) names.year.trim().toIntOrNull() ?: song.year else song.year,
+            yearRead = writeTags || song.yearRead,
             // Only lyrics or a cover added: the names weren't touched, so the status stays (an
             // unchecked song stays unchecked, one that was already right stays right).
             status = if (!writeTags && !rename) song.status else SongStatus.FIXED,
@@ -380,7 +409,59 @@ class SongRepository(
         return saved
     }
 
+    /** Runs a [FixPlan] on the song. */
+    suspend fun apply(song: Song, plan: FixPlan): Applied =
+        apply(song, plan.names, plan.writeTags, plan.rename, plan.addLyrics, plan.addCover, plan.releaseGroupId, plan.normalize)
+
+    /** What a fix does: the names to write (blank = leave as is) and what else it changes. */
+    data class FixPlan(
+        val names: NewNames,
+        val writeTags: Boolean,
+        val rename: Boolean,
+        val addLyrics: Boolean,
+        val addCover: Boolean,
+        val releaseGroupId: String?,
+        val normalize: Boolean,
+    )
+
     companion object {
+        /** The song's names are right and only its year is wrong (missing or not the match's). */
+        fun isYearOnly(song: Song): Boolean =
+            song.status == SongStatus.SUGGESTED && song.extension in SongWriter.TAGGABLE &&
+                Verdict.onlyYearWrong(song.title, song.artist, song.album, song.genre, song.year, song.candidates)
+
+        /** The year [song] should have, when its names are right by a good match ([Verdict.correctYear]). */
+        fun correctYear(song: Song): Int? = Verdict.correctYear(song.title, song.artist, song.year, song.candidates)
+
+        /** Songs whose only problem is the year, for "Correct year in N songs". */
+        fun yearOnly(songs: List<Song>): List<Song> = songs.filter(::isYearOnly)
+
+        /**
+         * A year-only fix: the year, and nothing else of the names, no rename. With [extras], the
+         * lyrics, cover and volume tags the settings add on every fix come along (as in "Fix N sure ones").
+         */
+        fun yearOnlyPlan(song: Song, settings: SettingsState, extras: Boolean, writeTags: Boolean = true): FixPlan = FixPlan(
+            names = NewNames("", "", "", "", correctYear(song)?.toString().orEmpty()),
+            writeTags = writeTags && song.extension in SongWriter.TAGGABLE,
+            rename = false,
+            addLyrics = extras && settings.addLyrics,
+            addCover = extras && settings.addCover,
+            releaseGroupId = song.best?.releaseGroupId,
+            normalize = extras && settings.normalize,
+        )
+
+        /** How "Fix N sure ones" fixes [song] with its sure match [c]: the whole match, or only the year when that's all that's wrong. */
+        fun surePlan(song: Song, c: Candidate, settings: SettingsState): FixPlan =
+            if (isYearOnly(song)) {
+                yearOnlyPlan(song, settings, extras = true, writeTags = settings.writeTags)
+            } else {
+                FixPlan(
+                    NewNames(c.title, c.artist, c.album.orEmpty(), c.genre.orEmpty(), c.year?.toString().orEmpty()),
+                    settings.writeTags && song.extension in SongWriter.TAGGABLE, settings.renameFiles, settings.addLyrics, settings.addCover,
+                    c.releaseGroupId, settings.normalize,
+                )
+            }
+
         /** Songs measured, whose files can take ReplayGain tags and don't have standard ones yet. */
         fun needNormalizing(songs: List<Song>): List<Song> =
             songs.filter { it.loudnessLufs != null && !it.volumeTagsStandard && it.extension in SongWriter.TAGGABLE }

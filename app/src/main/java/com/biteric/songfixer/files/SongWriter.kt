@@ -9,7 +9,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
+import org.jaudiotagger.audio.mp3.MP3File
 import org.jaudiotagger.tag.TagOptionSingleton
+import org.jaudiotagger.tag.id3.ID3v23Tag
+import org.jaudiotagger.tag.id3.ID3v24Tag
+import org.jaudiotagger.tag.reference.ID3V2Version
 import org.jaudiotagger.tag.images.AndroidArtwork
 import org.jaudiotagger.tag.reference.PictureTypes
 import android.graphics.BitmapFactory
@@ -33,6 +37,8 @@ class SongWriter(private val context: Context) {
         TagOptionSingleton.getInstance().apply {
             isWriteMp3GenresAsText = true
             isWriteMp4GenresAsText = true
+            // New MP3 tags as ID3v2.3: see [asId3v23].
+            setID3V2Version(ID3V2Version.ID3_V23)
         }
     }
 
@@ -65,8 +71,12 @@ class SongWriter(private val context: Context) {
                 ?: throw Failed("The song's file can't be read")
             val audio = runCatching { AudioFileIO.read(copy) }.getOrElse { throw Failed("This file's tags can't be read: ${it.message}") }
             val tag = audio.tagOrCreateAndSetDefault
+            var namesChanged = false
             fun set(key: FieldKey, value: String) {
-                if (value.isNotBlank() && tag.getFirst(key) != value.trim()) tag.setField(key, value.trim())
+                if (value.isNotBlank() && tag.getFirst(key) != value.trim()) {
+                    tag.setField(key, value.trim())
+                    namesChanged = true
+                }
             }
             set(FieldKey.TITLE, names.title)
             set(FieldKey.ARTIST, names.artist)
@@ -111,6 +121,11 @@ class SongWriter(private val context: Context) {
                     .getOrDefault(false) -> EmbedResult.ADDED
                 else -> EmbedResult.UNSUPPORTED
             }
+            // Nothing to change: leave the file as it is (no rewrite, no new tag version).
+            if (!namesChanged && EmbedResult.ADDED !in listOf(embed, coverResult, gainResult)) {
+                return@withContext Written(embed, coverResult, gainResult)
+            }
+            asId3v23(audio)
             runCatching { audio.commit() }.getOrElse { throw Failed("The tags couldn't be written: ${it.message}") }
             // Never copy a damaged file over the song.
             val check = runCatching { AudioFileIO.read(copy) }.getOrNull()
@@ -125,6 +140,16 @@ class SongWriter(private val context: Context) {
         } finally {
             copy.delete()
         }
+    }
+
+    /**
+     * MP3s are saved with an ID3v2.3 tag: Android's music library (and so its players) reads the
+     * v2.3 year (TYER) but skips the v2.4 one (TDRC). Every other frame carries over.
+     */
+    private fun asId3v23(audio: org.jaudiotagger.audio.AudioFile) {
+        val mp3 = audio as? MP3File ?: return
+        val v24 = mp3.getID3v2Tag() as? ID3v24Tag ?: return
+        mp3.setID3v2Tag(ID3v23Tag(v24))
     }
 
     /**
