@@ -46,10 +46,14 @@ data class LyricsSearch(
 
 enum class SongFilter(val label: String) { TO_FIX("To fix"), NOT_FOUND("Not found"), DONE("Done"), ALL("All") }
 
-fun SongFilter.matches(s: Song) = when (this) {
-    SongFilter.TO_FIX -> s.status == SongStatus.SUGGESTED
+/**
+ * "To fix" holds every song with something to do (a better name, or volume tags, a silence trim,
+ * lyrics, as the [settings] ask), checked or not found; "Done" the songs named right with nothing left.
+ */
+fun SongFilter.matches(s: Song, settings: SettingsState) = when (this) {
+    SongFilter.TO_FIX -> SongRepository.toFix(s, settings)
     SongFilter.NOT_FOUND -> s.status == SongStatus.NOT_FOUND || s.status == SongStatus.FAILED
-    SongFilter.DONE -> s.status == SongStatus.OK || s.status == SongStatus.FIXED || s.status == SongStatus.KEPT
+    SongFilter.DONE -> (s.status == SongStatus.OK || s.status == SongStatus.FIXED || s.status == SongStatus.KEPT) && !SongRepository.toFix(s, settings)
     SongFilter.ALL -> true
 }
 
@@ -176,8 +180,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun trimAll() = work("Trimming stopped") {
         var trimmed = 0
         var failed = 0
-        for (song in SongRepository.needTrimming(songs.value)) {
+        for (listed in SongRepository.needTrimming(songs.value)) {
             try {
+                val song = repo.get(listed.id)?.takeIf { it.hasSilenceToTrim } ?: continue
                 when (repo.trimSilence(song).trim) {
                     SongRepository.TrimOutcome.TRIMMED -> trimmed++
                     SongRepository.TrimOutcome.FAILED -> failed++
@@ -212,8 +217,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         var added = 0
         var kept = 0
         var failed = 0
-        for (song in SongRepository.needNormalizing(songs.value)) {
+        for (listed in SongRepository.needNormalizing(songs.value)) {
             try {
+                val song = repo.get(listed.id)?.takeIf(SongRepository::needsNormalizing) ?: continue
                 when (repo.normalize(song).volume) {
                     SongRepository.LyricsOutcome.ADDED -> added++
                     SongRepository.LyricsOutcome.ALREADY_THERE -> kept++
@@ -256,8 +262,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         var fixed = 0
         var failed = 0
         var lyrics = 0
-        for ((song, c) in repo.sureOnes(songs.value)) {
+        for ((listed, c) in repo.sureOnes(songs.value)) {
             try {
+                val song = repo.get(listed.id)?.takeIf { it.status == SongStatus.SUGGESTED } ?: continue
                 // A song whose only problem is its year gets just the year (no rename, names as they are).
                 val done = repo.apply(song, SongRepository.surePlan(song, c, s))
                 if (done.lyrics == SongRepository.LyricsOutcome.ADDED) lyrics++
@@ -276,8 +283,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun correctYears() = work("Correcting years stopped") {
         var done = 0
         var failed = 0
-        for (song in SongRepository.yearOnly(songs.value)) {
+        for (listed in SongRepository.yearOnly(songs.value)) {
             try {
+                val song = repo.get(listed.id)?.takeIf(SongRepository::isYearOnly) ?: continue
                 repo.apply(song, SongRepository.yearOnlyPlan(song, settings.value, extras = false))
                 done++
             } catch (e: Exception) {
@@ -291,8 +299,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun addLyricsToAll() = work("Adding lyrics stopped") {
         var added = 0
         var failed = 0
-        for (song in repo.needLyrics(songs.value)) {
+        for (listed in repo.needLyrics(songs.value)) {
             try {
+                val song = repo.get(listed.id)?.takeIf(SongRepository::needsLyrics) ?: continue
                 if (repo.addLyrics(song).lyrics == SongRepository.LyricsOutcome.ADDED) added++
             } catch (e: Exception) {
                 failed++

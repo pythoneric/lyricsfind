@@ -65,6 +65,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.biteric.songfixer.SongRepository
+import com.biteric.songfixer.data.SettingsState
 import com.biteric.songfixer.data.Song
 import com.biteric.songfixer.data.SongStatus
 
@@ -138,6 +140,7 @@ fun App(vm: MainViewModel = viewModel()) {
             } else {
                 SongList(
                     songs = songs,
+                    settings = settings,
                     check = check,
                     busy = busy,
                     hasKey = settings.acoustIdKey.isNotBlank(),
@@ -145,7 +148,7 @@ fun App(vm: MainViewModel = viewModel()) {
                     onStart = vm::startCheck,
                     onStop = vm::stopCheck,
                     onFixAllSure = vm::applyAllSure,
-                    lyricsToAdd = lyricsToAdd,
+                    lyricsToAdd = if (settings.addLyrics) lyricsToAdd else 0,
                     onAddAllLyrics = vm::addLyricsToAll,
                     toNormalize = if (settings.normalize) toNormalize else 0,
                     onNormalizeAll = vm::normalizeAll,
@@ -259,6 +262,7 @@ private fun Welcome(onPick: () -> Unit, hasKey: Boolean, onSettings: () -> Unit)
 @Composable
 private fun SongList(
     songs: List<Song>,
+    settings: SettingsState,
     check: CheckState,
     busy: Boolean,
     hasKey: Boolean,
@@ -279,7 +283,7 @@ private fun SongList(
     onSettings: () -> Unit,
 ) {
     var filter by rememberSaveable { mutableStateOf(SongFilter.TO_FIX) }
-    val shown = songs.filter(filter::matches)
+    val shown = songs.filter { filter.matches(it, settings) }
     val sure = songs.count { it.status == SongStatus.SUGGESTED && it.best?.sure == true }
 
     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -289,7 +293,7 @@ private fun SongList(
                     Text(folderName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val counts = songs.groupingBy { it.status }.eachCount()
                     Text(
-                        "${songs.size} songs · ${counts[SongStatus.SUGGESTED] ?: 0} to fix · " +
+                        "${songs.size} songs · ${songs.count { SongFilter.TO_FIX.matches(it, settings) }} to fix · " +
                             "${(counts[SongStatus.OK] ?: 0) + (counts[SongStatus.FIXED] ?: 0)} right · " +
                             "${(counts[SongStatus.NOT_FOUND] ?: 0) + (counts[SongStatus.FAILED] ?: 0)} not found",
                         style = MaterialTheme.typography.bodySmall,
@@ -312,14 +316,20 @@ private fun SongList(
                             LinearProgressIndicator(Modifier.fillMaxWidth())
                         }
                         Spacer(Modifier.height(8.dp))
-                        OutlinedButton(onClick = onStop) { Text("Stop") }
                     } else {
                         check.error?.let {
                             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                             Spacer(Modifier.height(8.dp))
                         }
+                    }
+                    // The batch fixes stay while the check runs, for the songs checked so far.
+                    run {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = onStart) { Text(if (songs.isEmpty()) "Check songs" else "Check new songs") }
+                            if (check.running) {
+                                OutlinedButton(onClick = onStop) { Text("Stop") }
+                            } else {
+                                Button(onClick = onStart) { Text(if (songs.isEmpty()) "Check songs" else "Check new songs") }
+                            }
                             if (sure > 0) OutlinedButton(onClick = onFixAllSure, enabled = !busy) { Text("Fix $sure sure ones") }
                         }
                         if (toCorrectYear > 0) {
@@ -369,7 +379,7 @@ private fun SongList(
                     FilterChip(
                         selected = f == filter,
                         onClick = { filter = f },
-                        label = { Text("${f.label} (${songs.count(f::matches)})") },
+                        label = { Text("${f.label} (${songs.count { f.matches(it, settings) }})") },
                     )
                 }
             }
@@ -391,16 +401,16 @@ private fun SongList(
             }
         }
         items(shown, key = { it.id }) { song ->
-            SongRow(song, onClick = { onOpen(song) }, onPlay = { onPlay(song) })
+            SongRow(song, settings, onClick = { onOpen(song) }, onPlay = { onPlay(song) })
             HorizontalDivider(Modifier.padding(horizontal = 16.dp))
         }
     }
 }
 
 @Composable
-private fun SongRow(song: Song, onClick: () -> Unit, onPlay: () -> Unit) {
+private fun SongRow(song: Song, settings: SettingsState, onClick: () -> Unit, onPlay: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        SongRowText(song, Modifier.weight(1f))
+        SongRowText(song, settings, Modifier.weight(1f))
         // Fixed: play it in BitEric to check the names and lyrics.
         if (song.status == SongStatus.FIXED || song.lyricsInFile == true) {
             IconButton(onClick = onPlay) {
@@ -412,7 +422,7 @@ private fun SongRow(song: Song, onClick: () -> Unit, onPlay: () -> Unit) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SongRowText(song: Song, modifier: Modifier) {
+private fun SongRowText(song: Song, settings: SettingsState, modifier: Modifier) {
     Column(modifier) {
         Text(
             if (song.folder.isEmpty()) song.fileName else "${song.folder}/${song.fileName}",
@@ -446,7 +456,8 @@ private fun SongRowText(song: Song, modifier: Modifier) {
         // Wraps: "Volume tags not standard" next to the others doesn't fit on one line.
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             statusLabel(song)?.let { SmallChip(it) }
-            loudnessChip(song)?.let { SmallChip(it) }
+            // Why it's in "To fix" when its names are right: no volume tags yet (and not far off).
+            (loudnessChip(song) ?: "No volume tags".takeIf { settings.normalize && SongRepository.needsNormalizing(song) })?.let { SmallChip(it) }
             yearChip(song)?.let { SmallChip(it) }
             silenceChip(song)?.let { SmallChip(it) }
             if (song.status == SongStatus.SUGGESTED && best != null) SmallChip(if (best.sure) "Sure match" else "Check it")

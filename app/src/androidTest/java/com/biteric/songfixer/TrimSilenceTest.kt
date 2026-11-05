@@ -139,6 +139,44 @@ class TrimSilenceTest {
         g.delete()
     }
 
+    /**
+     * Fixing while the check runs: a measurement that finishes after the song was renamed doesn't
+     * put the old file back in its row; the song is measured again under its new name.
+     */
+    @Test
+    fun measurementDoesNotUndoAFixMadeMeanwhile() = runTest {
+        val db = Room.inMemoryDatabaseBuilder(appContext, SongDatabase::class.java).build()
+        val f = file("race.mp3", paddedMp3())
+        val renamed = File(appContext.cacheDir, "trimtest-race-renamed.mp3")
+        try {
+            val repo = testRepository(appContext, db)
+            db.songs().insert(listOf(Song(uri = Uri.fromFile(f).toString(), fileName = f.name, folder = "", size = f.length(), modified = f.lastModified(), status = SongStatus.OK)))
+            val song = db.songs().all().single()
+            // The fix lands (file renamed, row updated) while the measurement of the old row is still running.
+            f.renameTo(renamed)
+            db.songs().update(song.copy(uri = Uri.fromFile(renamed).toString(), fileName = renamed.name, status = SongStatus.FIXED))
+            val saved = db.songs().saveMeasurement(
+                song.id, song.uri, -9.0, -9.0, 0.9, true, 3000, 4000, true, null, null, null, "NONE", false,
+            )
+            assertEquals(0, saved)
+            val row = db.songs().get(song.id)!!
+            assertEquals(renamed.name, row.fileName)
+            assertEquals(SongStatus.FIXED, row.status)
+            assertEquals(false, row.silenceChecked)
+            // Measured again, under its new name.
+            repo.measure(song.id)
+            val measured = db.songs().get(song.id)!!
+            assertEquals(renamed.name, measured.fileName)
+            assertEquals(SongStatus.FIXED, measured.status)
+            assertTrue("lead ${measured.silenceStartMs}", measured.silenceStartMs!! >= 1900)
+            assertTrue(measured.loudnessChecked && measured.silenceChecked && measured.gainVerdict != null)
+        } finally {
+            db.close()
+            f.delete()
+            renamed.delete()
+        }
+    }
+
     /** The app's path: the check measures it, suggests the trim, the trim is saved, nothing is left to suggest. */
     @Test
     fun repositoryMeasuresSuggestsAndTrims() = runTest {

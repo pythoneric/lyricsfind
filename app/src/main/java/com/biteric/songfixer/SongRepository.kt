@@ -99,10 +99,14 @@ class SongRepository(
      * Checks the next unchecked song; false when there are none left.
      * Throws [AcoustIdKeyException] when the key is refused (the song stays unchecked).
      */
-    suspend fun checkNext(): Boolean {
-        val song = dao.nextUnchecked() ?: return false
-        dao.update(check(song))
-        return true
+    suspend fun checkNext(): Boolean = checkNextSong() != null
+
+    /** Checks the next unchecked song and returns it as saved; null when there are none left. */
+    suspend fun checkNextSong(): Song? {
+        val song = dao.nextUnchecked() ?: return null
+        val checked = check(song)
+        dao.update(checked)
+        return checked
     }
 
     private suspend fun check(song: Song): Song {
@@ -350,13 +354,34 @@ class SongRepository(
      */
     suspend fun measureNext(): Boolean {
         val song = dao.nextUnmeasured() ?: return false
-        val measured = when {
-            !song.loudnessChecked -> measure(song)
-            !song.silenceChecked -> measureSilence(song)
-            else -> song
-        }
-        dao.update(withVolumeTags(measured))
+        measureSong(song)
         return true
+    }
+
+    /**
+     * Measures [id] now (right after its names were checked, so it's complete in "To fix" while
+     * the check goes on); nothing when it's measured already.
+     */
+    suspend fun measure(id: Long) {
+        val song = dao.get(id) ?: return
+        if (!song.loudnessChecked || !song.silenceChecked || song.gainVerdict == null) measureSong(song)
+    }
+
+    /** Measures what the song is missing and reads its volume tags; saves only those columns. */
+    private suspend fun measureSong(song: Song) {
+        val measured = withVolumeTags(
+            when {
+                !song.loudnessChecked -> measure(song)
+                !song.silenceChecked -> measureSilence(song)
+                else -> song
+            },
+        )
+        with(measured) {
+            dao.saveMeasurement(
+                id, uri, loudnessLufs, trackGainDb, truePeak, loudnessChecked, silenceStartMs, silenceEndMs, silenceChecked,
+                existingTrackGain, existingTrackPeak, existingReference, gainVerdict?.name, replayGainInFile,
+            )
+        }
     }
 
     /** The song with the silence at its ends filled in (not saved). */
@@ -438,8 +463,7 @@ class SongRepository(
         coverFinder.releaseGroup(releaseGroupId, album, artist)?.let(coverArt::previewUrl)
 
     /** Songs whose names are right and whose lyrics are online but not in the file yet. */
-    fun needLyrics(songs: List<Song>): List<Song> =
-        songs.filter { (it.status == SongStatus.OK || it.status == SongStatus.FIXED) && it.lyricsFound == true && it.lyricsInFile != true }
+    fun needLyrics(songs: List<Song>): List<Song> = songs.filter(::needsLyrics)
 
     /** Adds lyrics only, names untouched. */
     suspend fun addLyrics(song: Song): Applied = apply(song, NewNames("", "", "", ""), writeTags = false, rename = false, addLyrics = true)
@@ -534,7 +558,27 @@ class SongRepository(
 
         /** Songs measured, whose files can take ReplayGain tags and don't have standard ones yet. */
         fun needNormalizing(songs: List<Song>): List<Song> =
-            songs.filter { it.loudnessLufs != null && !it.volumeTagsStandard && it.extension in SongWriter.TAGGABLE }
+            songs.filter(::needsNormalizing)
+
+        /** Named right, with lyrics online that aren't in the file yet. */
+        fun needsLyrics(song: Song): Boolean =
+            (song.status == SongStatus.OK || song.status == SongStatus.FIXED) && song.lyricsFound == true && song.lyricsInFile != true
+
+        /** Measured, in a format that takes ReplayGain tags, without standard ones yet. */
+        fun needsNormalizing(song: Song): Boolean =
+            song.loudnessLufs != null && !song.volumeTagsStandard && song.extension in SongWriter.VOLUME_TAGGABLE
+
+        /**
+         * Something to do for this song, so it's in "To fix": a better name or year, or (as the
+         * settings ask) volume tags, a silence trim or lyrics. Songs not checked yet aren't.
+         */
+        fun toFix(song: Song, settings: SettingsState): Boolean = when {
+            song.status == SongStatus.NEW -> false
+            song.status == SongStatus.SUGGESTED -> true
+            settings.normalize && needsNormalizing(song) -> true
+            settings.trimSilence && song.hasSilenceToTrim -> true
+            else -> settings.addLyrics && needsLyrics(song)
+        }
 
         /** Songs measured with enough silence at an end to cut, in a format that can be cut. */
         fun needTrimming(songs: List<Song>): List<Song> = songs.filter { it.hasSilenceToTrim }

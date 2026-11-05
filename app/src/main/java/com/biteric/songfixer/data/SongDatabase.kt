@@ -64,6 +64,23 @@ interface SongDao {
     @Query("SELECT * FROM songs WHERE yearRead = 0 AND status != 'NEW'")
     suspend fun yearNotRead(): List<Song>
 
+    /**
+     * Only the measurement's columns, and only while the row still points at the file that was
+     * measured: a fix made meanwhile (renamed, trimmed, tagged) isn't undone. 0 = not saved.
+     */
+    @Query(
+        "UPDATE songs SET loudnessLufs = :lufs, trackGainDb = :gain, truePeak = :peak, loudnessChecked = :loudnessChecked, " +
+            "silenceStartMs = :silenceStart, silenceEndMs = :silenceEnd, silenceChecked = :silenceChecked, " +
+            "existingTrackGain = :tagGain, existingTrackPeak = :tagPeak, existingReference = :tagReference, " +
+            "gainVerdict = :verdict, replayGainInFile = :gainInFile WHERE id = :id AND uri = :uri",
+    )
+    suspend fun saveMeasurement(
+        id: Long, uri: String,
+        lufs: Double?, gain: Double?, peak: Double?, loudnessChecked: Boolean,
+        silenceStart: Long?, silenceEnd: Long?, silenceChecked: Boolean,
+        tagGain: String?, tagPeak: String?, tagReference: String?, verdict: String?, gainInFile: Boolean?,
+    ): Int
+
     @Query("SELECT COUNT(*) FROM songs WHERE loudnessChecked = 0 OR silenceChecked = 0 OR gainVerdict IS NULL")
     suspend fun unmeasuredCount(): Int
 }

@@ -32,8 +32,13 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val total = app.repository.uncheckedCount()
         var done = 0
         setProgress(workDataOf(KEY_DONE to 0, KEY_TOTAL to total))
+        val measure = app.settings.current.normalize || app.settings.current.trimSilence
         try {
-            while (app.repository.checkNext()) {
+            while (true) {
+                val song = app.repository.checkNextSong() ?: break
+                // Measured right away, so the song shows in "To fix" complete (volume, silence)
+                // and can be fixed while the check goes on.
+                if (measure) app.repository.measure(song.id)
                 done++
                 setProgress(workDataOf(KEY_DONE to done, KEY_TOTAL to total))
                 if (done % 5 == 0 || done == total) setForeground(foregroundInfo(done, total))
@@ -43,8 +48,8 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
         // Songs checked before years were kept: read their year from the file (quick, no lookups).
         app.repository.readYears()
-        // Then loudness and the silence at the ends, one whole song at a time (one decode for both).
-        if (app.settings.current.normalize || app.settings.current.trimSilence) {
+        // Then songs checked before but not measured yet: loudness and silence, one decode for both.
+        if (measure) {
             val toMeasure = app.repository.unmeasuredCount()
             var measured = 0
             setProgress(workDataOf(KEY_DONE to 0, KEY_TOTAL to toMeasure, KEY_PHASE to PHASE_LOUDNESS))
