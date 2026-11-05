@@ -59,6 +59,7 @@ import com.biteric.songfixer.data.Song
 import com.biteric.songfixer.data.SongStatus
 import com.biteric.songfixer.files.NewNames
 import com.biteric.songfixer.files.SongWriter
+import com.biteric.songfixer.files.SilenceTrimmer
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -68,8 +69,9 @@ fun SongSheet(
     settings: SettingsState,
     busy: Boolean,
     onDismiss: () -> Unit,
-    onApply: (NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean, addCover: Boolean, releaseGroupId: String?, normalize: Boolean) -> Unit,
+    onApply: (NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean, addCover: Boolean, releaseGroupId: String?, normalize: Boolean, trimSilence: Boolean) -> Unit,
     onNormalize: () -> Unit,
+    onTrimSilence: () -> Unit,
     onRemeasure: () -> Unit,
     onAddLyrics: () -> Unit,
     onAddCover: () -> Unit,
@@ -111,6 +113,11 @@ fun SongSheet(
                 "Volume",
                 loudnessSummary(song)
                     ?: if (song.loudnessChecked) "couldn't be measured" else "not measured yet",
+            )
+            Field(
+                "Silence",
+                silenceSummary(song)
+                    ?: if (song.silenceChecked) "couldn't be measured" else "not measured yet",
             )
             song.note?.let {
                 Spacer(Modifier.height(6.dp))
@@ -265,14 +272,30 @@ fun SongSheet(
                 enabled = canNormalize && !song.volumeTagsStandard,
             ) { normalize = it }
 
+            // Silence at the ends: cut off (the audio in between isn't re-encoded), so the song mixes without a gap.
+            val canTrim = song.extension in SilenceTrimmer.FORMATS
+            var trim by remember(song.id) { mutableStateOf(settings.trimSilence && song.hasSilenceToTrim) }
+            CheckRow(
+                "Trim silence",
+                when {
+                    !canTrim -> ".${song.extension} files can't be trimmed here (MP3, FLAC and WAV can)"
+                    song.hasSilenceToTrim ->
+                        "Cuts its ${silenceAtEnds(song.silenceStartMs ?: 0, song.silenceEndMs ?: 0)}, so it mixes without a gap; nothing is re-encoded"
+                    song.silenceChecked -> "No silence worth cutting at either end"
+                    else -> "Finds the silence at the start and end and cuts it; nothing is re-encoded"
+                },
+                trim,
+                enabled = canTrim && (song.hasSilenceToTrim || !song.silenceChecked),
+            ) { trim = it }
+
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = {
                         val rgId = candidate?.releaseGroupId?.takeIf { candidate.album == album }
-                        onApply(NewNames(title, artist, album, genre, year.trim()), writeTags, rename, addLyrics, addCover, rgId, normalize)
+                        onApply(NewNames(title, artist, album, genre, year.trim()), writeTags, rename, addLyrics, addCover, rgId, normalize, trim)
                     },
-                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && yearProblem == null && (writeTags || rename || addLyrics || addCover || normalize),
+                    enabled = !busy && title.isNotBlank() && artist.isNotBlank() && yearProblem == null && (writeTags || rename || addLyrics || addCover || normalize || trim),
                 ) { Text("Fix") }
                 if (song.status != SongStatus.KEPT && song.status != SongStatus.FIXED) TextButton(onClick = onKeep) { Text("Keep as is") }
                 TextButton(onClick = onRecheck) { Text("Check again") }
@@ -294,6 +317,9 @@ fun SongSheet(
                     // Measures again and replaces volume tags, the app's or another program's.
                     TextButton(onClick = onRemeasure, enabled = !busy) { Text("Re-measure") }
                 }
+            }
+            if (song.hasSilenceToTrim && song.status != SongStatus.NEW) {
+                TextButton(onClick = onTrimSilence, enabled = !busy) { Text("Trim silence only") }
             }
             Spacer(Modifier.height(24.dp))
         }

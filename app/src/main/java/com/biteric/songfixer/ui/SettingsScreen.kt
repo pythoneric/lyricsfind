@@ -86,8 +86,11 @@ fun SettingsScreen(
             SwitchRow("Also save lyrics as a .lrc file next to the song", settings.lrcFiles) { v -> onChange { it.copy(lrcFiles = v) } }
             SwitchRow("Add the album cover (from the Cover Art Archive) to songs without one", settings.addCover) { v -> onChange { it.copy(addCover = v) } }
             SwitchRow("Normalize volume: measure loudness and add ReplayGain tags (−18 LUFS)", settings.normalize) { v -> onChange { it.copy(normalize = v) } }
+            SwitchRow("Trim silence: cut the silence at the start and end of songs, for gapless mixing", settings.trimSilence) { v -> onChange { it.copy(trimSilence = v) } }
             Text(
-                "Lyrics, covers and volume tags already in a file are never replaced (Re-measure replaces volume tags). The audio itself is never changed. Formats without a lyrics tag (e.g. .opus) always get a .lrc file.",
+                "Lyrics, covers and volume tags already in a file are never replaced (Re-measure replaces volume tags). " +
+                    "The audio is only changed by Trim silence, which cuts silence of half a second or more off the ends " +
+                    "(MP3, FLAC and WAV) without re-encoding the rest. Formats without a lyrics tag (e.g. .opus) always get a .lrc file.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

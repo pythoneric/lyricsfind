@@ -78,7 +78,34 @@ class MigrationTest {
         }
     }
 
+    /** v7 keeps the silence at the ends: rows from v6 (loudness measured, tags read) get it measured next. */
+    @Test
+    fun v6ToV7MeasuresTheSilenceNext() = runTest {
+        helper.createDatabase(name, 6).use { db ->
+            db.execSQL(
+                "INSERT INTO songs (uri, fileName, folder, size, modified, status, candidates, loudnessLufs, loudnessChecked, gainVerdict, year, yearRead) " +
+                    "VALUES ('content://x/c.mp3', 'c.mp3', '', 10, 20, 'OK', '[]', -9.0, 1, 'STANDARD', 2017, 1)",
+            )
+        }
+        helper.runMigrationsAndValidate(name, 7, true, *SongDatabase.MIGRATIONS).close()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = Room.databaseBuilder(context, SongDatabase::class.java, name).addMigrations(*SongDatabase.MIGRATIONS).build()
+        try {
+            val song = db.songs().all().single()
+            assertEquals(2017, song.year)
+            assertEquals(-9.0, song.loudnessLufs!!, 0.0)
+            assertNull(song.silenceStartMs)
+            assertEquals(false, song.silenceChecked)
+            assertEquals(false, song.hasSilenceToTrim)
+            assertEquals(song.id, db.songs().nextUnmeasured()?.id)
+        } finally {
+            db.close()
+            context.deleteDatabase(name)
+            java.io.File(context.getDatabasePath(name).path + ".lck").delete()
+        }
+    }
+
     private companion object {
-        const val LATEST = 6
+        const val LATEST = 7
     }
 }

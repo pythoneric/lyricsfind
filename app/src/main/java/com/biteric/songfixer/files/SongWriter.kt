@@ -22,6 +22,9 @@ import com.biteric.songfixer.loudness.Loudness
 import com.biteric.songfixer.loudness.GainVerdict
 import com.biteric.songfixer.loudness.ReplayGainCheck
 import com.biteric.songfixer.loudness.VolumeTags
+import com.biteric.songfixer.loudness.Silence
+import com.biteric.songfixer.fingerprint.PcmDecoder
+import com.biteric.songfixer.fingerprint.PcmSink
 import java.io.File
 
 /** The names to give a song. Blank fields are left as they are in the file. */
@@ -167,6 +170,50 @@ class SongWriter(private val context: Context) {
             runCatching { AudioFileIO.read(copy).tag?.let(ReplayGainTags::volumeTags) }.getOrNull() ?: VolumeTags()
         } finally {
             copy.delete()
+        }
+    }
+
+    /** How much silence was cut off each end, and how much is left there (the margins kept). */
+    data class Trimmed(val startMs: Long, val endMs: Long, val leadLeftMs: Long, val tailLeftMs: Long)
+
+    /**
+     * Cuts the silence off the song's start and end (see [SilenceTrimmer]), on a copy in the app's
+     * cache: [findSilence] listens to that copy, the cut copy must decode and read back, and only
+     * then is it copied over the song. Nothing is cut (0, 0) when there's too little silence to bother.
+     */
+    suspend fun trimSilence(uri: Uri, extension: String, findSilence: suspend (Uri) -> Silence): Trimmed = withContext(Dispatchers.IO) {
+        if (extension !in SilenceTrimmer.FORMATS) throw Failed(".$extension files can't be trimmed here")
+        val dir = File(context.cacheDir, "trim").apply { mkdirs() }
+        val copy = File(dir, "trim.$extension")
+        val cut = File(dir, "cut.$extension")
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input -> copy.outputStream().use { input.copyTo(it) } }
+                ?: throw Failed("The song's file can't be read")
+            val silence = findSilence(Uri.fromFile(copy))
+            val result = try {
+                SilenceTrimmer.cut(copy.readBytes(), extension, silence)
+            } catch (e: SilenceTrimmer.Unsupported) {
+                throw Failed(e.message ?: "This file can't be trimmed")
+            } ?: return@withContext Trimmed(0, 0, silence.leadMs, silence.tailMs)
+            cut.writeBytes(result.bytes)
+            // Never copy a damaged file over the song: it must decode, and its tags still read.
+            runCatching { PcmDecoder(context).decode(Uri.fromFile(cut), object : PcmSink {
+                override fun start(sampleRate: Int, channels: Int) {}
+                override fun pcm(samples: FloatArray, frames: Int) {}
+            }, maxSeconds = 2) }.getOrElse { throw Failed("The trimmed file didn't play back; the song was left as it was") }
+            val before = runCatching { AudioFileIO.read(copy) }.getOrNull()
+            if (before != null && runCatching { AudioFileIO.read(cut) }.isFailure) {
+                throw Failed("The trimmed file's tags didn't read back; the song was left as it was")
+            }
+            context.contentResolver.openOutputStream(uri, "wt")?.use { out -> cut.inputStream().use { it.copyTo(out) } }
+                ?: throw Failed("The song's file can't be changed")
+            Trimmed(
+                result.startMs, result.endMs,
+                (silence.leadMs - result.startMs).coerceAtLeast(0), (silence.tailMs - result.endMs).coerceAtLeast(0),
+            )
+        } finally {
+            copy.delete()
+            cut.delete()
         }
     }
 
