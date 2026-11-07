@@ -216,6 +216,7 @@ class SongRepository(
         var trimOutcome = TrimOutcome.NOT_ASKED
         var trimmed: SongWriter.Trimmed? = null
         var trimError: String? = null
+        var untrimmable = false
         if (trimSilence) {
             trimOutcome = try {
                 val t = writer.trimSilence(uri, song.extension) { loudness.silence(it) }
@@ -223,6 +224,10 @@ class SongRepository(
                 if (t.startMs + t.endMs > 0) TrimOutcome.TRIMMED else TrimOutcome.NOTHING_TO_CUT
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: SongWriter.Untrimmable) {
+                trimError = e.message
+                untrimmable = true
+                TrimOutcome.FAILED
             } catch (e: Exception) {
                 trimError = e.message
                 TrimOutcome.FAILED
@@ -326,6 +331,8 @@ class SongRepository(
             replayGainInFile = if (volumeOutcome == LyricsOutcome.ADDED || volumeOutcome == LyricsOutcome.ALREADY_THERE) true else measured.replayGainInFile,
             note = null,
         ).let { s ->
+            // Can't be trimmed at all: off the "to trim" list (or every batch tries it again), saying why.
+            if (untrimmable) return@let s.copy(silenceStartMs = null, silenceEndMs = null, note = "The silence can't be cut from this file: $trimError")
             val t = trimmed ?: return@let s
             s.copy(
                 silenceStartMs = t.leadLeftMs,

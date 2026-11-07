@@ -164,7 +164,8 @@ class SilenceTrimmerTest {
     // ------------------------------------------------------------ MP3
 
     /** 128 kbps MPEG-1 Layer III frames of [frames] count, empty, after an ID3v2 tag and a LAME Info frame. */
-    private fun mp3(frames: Int): ByteArray {
+    /** [junkAfter]: 2 stray bytes after that audio frame; [ending]: what ends the file in place of an ID3v1 tag. */
+    private fun mp3(frames: Int, junkAfter: Int = -1, ending: ByteArray = "TAG".toByteArray() + ByteArray(125)): ByteArray {
         val out = ByteArrayOutputStream()
         out.write("ID3".toByteArray() + byteArrayOf(3, 0, 0, 0, 0, 0, 10) + ByteArray(10))
         val info = ByteArray(417)
@@ -183,8 +184,9 @@ class SilenceTrimmerTest {
             f[0] = 0xFF.toByte(); f[1] = 0xFB.toByte(); f[2] = 0x90.toByte(); f[3] = 0x44
             f[100] = i.toByte() // tells frames apart
             out.write(f)
+            if (i == junkAfter) out.write(byteArrayOf(0xDA.toByte(), 0x58))
         }
-        out.write("TAG".toByteArray() + ByteArray(125))
+        out.write(ending)
         return out.toByteArray()
     }
 
@@ -215,5 +217,33 @@ class SilenceTrimmerTest {
         val lastKept = firstKept + kept - 1
         assertTrue("last kept $lastKept", lastKept in 255..262)
         assertEquals(firstKept * spf * 1000 / rate, cut.startMs)
+    }
+
+    /** Real files: stray bytes between two frames ("07 Desde el Fondo de Mi Corazon.mp3" has 2, a quarter in). */
+    @Test
+    fun mp3WithStrayBytesBetweenFramesIsStillCut() {
+        val spf = 1152L
+        val silence = Silence(rate, 400 * spf, 100 * spf, 250 * spf)
+        val b = mp3(400, junkAfter = 150)
+        val cut = SilenceTrimmer.cut(b, "mp3", silence)!!
+        val o = cut.bytes
+        // Same cut as without the stray bytes, which stay where they were (inside the part kept).
+        val clean = SilenceTrimmer.cut(mp3(400), "mp3", silence)!!
+        assertEquals(clean.startMs, cut.startMs)
+        assertEquals(clean.endMs, cut.endMs)
+        assertEquals(clean.bytes.size + 2, o.size)
+        val at = (0 until o.size - 1).first { o[it] == 0xDA.toByte() && o[it + 1] == 0x58.toByte() }
+        assertEquals(150, o[at - 417 + 100].toInt() and 0xFF)
+    }
+
+    /** Real files: padding after the last frame that isn't a known tag ("Juan Gabriel - Querida.mp3" ends with 8.8 KB of it). */
+    @Test
+    fun mp3EndingInUnknownBytesKeepsThem() {
+        val spf = 1152L
+        val padding = ByteArray(8834).also { it.fill(0x20, 0, 4) }
+        val b = mp3(400, ending = padding)
+        val cut = SilenceTrimmer.cut(b, "mp3", Silence(rate, 400 * spf, 100 * spf, 250 * spf))!!
+        assertArrayEquals(padding, cut.bytes.copyOfRange(cut.bytes.size - padding.size, cut.bytes.size))
+        assertTrue(cut.startMs > 2000 && cut.endMs > 3500)
     }
 }

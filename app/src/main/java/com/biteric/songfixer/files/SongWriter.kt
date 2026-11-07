@@ -32,7 +32,10 @@ data class NewNames(val title: String, val artist: String, val album: String, va
 
 /** Writes tags into a song and renames it, through the folder permission the user gave. */
 class SongWriter(private val context: Context) {
-    class Failed(message: String) : Exception(message)
+    open class Failed(message: String) : Exception(message)
+
+    /** The file can't be trimmed at all (not a passing problem): trying again won't help. */
+    class Untrimmable(message: String) : Failed(message)
 
     init {
         // Genres as typed: by default a genre the library knows ("Salsa") is stored as a number,
@@ -194,7 +197,7 @@ class SongWriter(private val context: Context) {
             val result = try {
                 cut.outputStream().buffered(256 * 1024).use { out -> SilenceTrimmer.cut(copy, extension, silence, out) }
             } catch (e: SilenceTrimmer.Unsupported) {
-                throw Failed(e.message ?: "This file can't be trimmed")
+                throw Untrimmable(e.message ?: "This file can't be trimmed")
             } ?: return@withContext Trimmed(0, 0, silence.leadMs, silence.tailMs)
             // Never copy a damaged file over the song: it must decode, and its tags still read.
             runCatching { PcmDecoder(context).decode(Uri.fromFile(cut), object : PcmSink {

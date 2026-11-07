@@ -181,6 +181,26 @@ object SilenceTrimmer {
 
         private fun sameStream(a: Header, b: Header) = a.version == b.version && a.sampleRate == b.sampleRate
 
+        /**
+         * The next frame of [first]'s stream from [from] on: one whose next frame follows right after
+         * it (or that ends the file); -1 when there are no more frames.
+         */
+        private fun resync(b: Src, from: Int, first: Header): Int {
+            var q = from
+            while (q + 4 <= b.size) {
+                if (u8(b, q) == 0xFF) {
+                    val h = header(b, q)
+                    if (h != null && sameStream(h, first) && q + h.length <= b.size) {
+                        val after = q + h.length
+                        val next = header(b, after)
+                        if (after == b.size || (next != null && sameStream(next, first))) return q
+                    }
+                }
+                q++
+            }
+            return -1
+        }
+
         fun cut(b: Src, startWanted: Long, endWanted: Long, silence: Silence, out: OutputStream): Cut? {
             var p = id3v2Length(b)
             // The first frame: one whose next frame follows right after it.
@@ -198,19 +218,23 @@ object SilenceTrimmer {
             val head = p
             var offsets = IntArray(1 shl 14)
             var count = 0
+            var audioEnd = p
             while (true) {
-                val h = header(b, p) ?: break
-                if (!sameStream(h, first) || p + h.length > b.size) break
-                if (count == offsets.size) offsets = offsets.copyOf(count * 2)
-                offsets[count++] = p
-                p += h.length
+                val h = header(b, p)
+                if (h != null && sameStream(h, first) && p + h.length <= b.size) {
+                    if (count == offsets.size) offsets = offsets.copyOf(count * 2)
+                    offsets[count++] = p
+                    p += h.length
+                    audioEnd = p
+                    continue
+                }
+                // Stray bytes between frames (real files have them; players skip them): the frames go on
+                // where a frame starts that the next one follows. They stay in the file as they are.
+                p = resync(b, p + 1, first)
+                if (p < 0) break
             }
-            val audioEnd = p
-            // What follows the frames must be tags (ID3v1, APE, Lyrics3), not more audio we lost track of.
-            val rest = b.size - audioEnd
-            if (rest > 0 && !ascii(b, audioEnd, "TAG") && !ascii(b, audioEnd, "APETAGEX") && !ascii(b, audioEnd, "LYRICS") && rest > 4096) {
-                throw Unsupported("The MP3's frames couldn't be followed to its end")
-            }
+            // Past the last frame there's no more audio, only what ends the file (ID3v1, APE, Lyrics3
+            // tags, padding): kept as it is.
 
             // A Xing/Info frame (LAME) or VBRI frame first: it holds the length, it's not audio.
             val side = if (first.version == 3) (if (first.mono) 17 else 32) else (if (first.mono) 9 else 17)
