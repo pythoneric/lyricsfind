@@ -279,13 +279,15 @@ fun SongSheet(
                 "Trim silence",
                 when {
                     !canTrim -> ".${song.extension} files can't be trimmed here (MP3, FLAC and WAV can)"
+                    song.silenceWorthTrimming && song.trimError != null ->
+                        "Its ${silenceAtEnds(song.silenceStartMs ?: 0, song.silenceEndMs ?: 0)} couldn't be cut last time: ${song.trimError}. Tick it to try again"
                     song.hasSilenceToTrim ->
                         "Cuts its ${silenceAtEnds(song.silenceStartMs ?: 0, song.silenceEndMs ?: 0)}, so it mixes without a gap; nothing is re-encoded"
                     song.silenceChecked -> "No silence worth cutting at either end"
                     else -> "Finds the silence at the start and end and cuts it; nothing is re-encoded"
                 },
                 trim,
-                enabled = canTrim && (song.hasSilenceToTrim || !song.silenceChecked),
+                enabled = canTrim && (song.silenceWorthTrimming || !song.silenceChecked),
             ) { trim = it }
 
             Spacer(Modifier.height(12.dp))
@@ -318,8 +320,8 @@ fun SongSheet(
                     TextButton(onClick = onRemeasure, enabled = !busy) { Text("Re-measure") }
                 }
             }
-            if (song.hasSilenceToTrim && song.status != SongStatus.NEW) {
-                TextButton(onClick = onTrimSilence, enabled = !busy) { Text("Trim silence only") }
+            if (song.silenceWorthTrimming && song.status != SongStatus.NEW) {
+                TextButton(onClick = onTrimSilence, enabled = !busy) { Text(if (song.trimError != null) "Try trimming again" else "Trim silence only") }
             }
             Spacer(Modifier.height(24.dp))
         }

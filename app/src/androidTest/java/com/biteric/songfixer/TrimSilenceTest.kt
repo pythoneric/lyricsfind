@@ -10,6 +10,7 @@ import com.biteric.songfixer.data.SongStatus
 import com.biteric.songfixer.files.SilenceTrimmer
 import com.biteric.songfixer.files.SongWriter
 import com.biteric.songfixer.loudness.LoudnessAnalyzer
+import com.biteric.songfixer.loudness.Silence
 import kotlinx.coroutines.test.runTest
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
@@ -71,7 +72,14 @@ class TrimSilenceTest {
     }
 
     /** test.mp3 with ~2 s of silent frames after its Info frame and ~3 s before its end tags. */
-    private fun paddedMp3(): ByteArray {
+    private fun paddedMp3(): ByteArray = ByteArrayOutputStream().also { writePaddedMp3(it) }.toByteArray()
+
+    /**
+     * Writes test.mp3 with ~2 s of silent frames after its Info frame and ~3 s before its end tags,
+     * its audio [repeats] times over (a long mix, written as it goes); the Info frame counts it all.
+     */
+    /** Returns how many audio frames it wrote (the Info frame not counted). */
+    private fun writePaddedMp3(out: java.io.OutputStream, repeats: Int = 1): Int {
         val b = testContext.assets.open("test.mp3").use { it.readBytes() }
         var p = 0
         if (String(b, 0, 3) == "ID3") p = 10 + ((b[6].toInt() and 0x7F) shl 21 or ((b[7].toInt() and 0x7F) shl 14) or ((b[8].toInt() and 0x7F) shl 7) or (b[9].toInt() and 0x7F))
@@ -79,13 +87,16 @@ class TrimSilenceTest {
         val first = SilenceTrimmer.Mp3.header(b, p)!!
         // Frames from here on; the end of the last one.
         var end = p
+        var frames = 0
         while (true) {
             val h = SilenceTrimmer.Mp3.header(b, end) ?: break
             if (end + h.length > b.size) break
             end += h.length
+            frames++
         }
         val hasInfo = listOf(p + 36, p + 21, p + 13).any { String(b, it, 4) == "Xing" || String(b, it, 4) == "Info" }
         val audioStart = if (hasInfo) p + first.length else p
+        val audioFrames = if (hasInfo) frames - 1 else frames
         // A silent frame: the same stream, no CRC, no padding, all side info zero (no audio data).
         val silent = ByteArray(first.length).also {
             b.copyInto(it, 0, p, p + 4)
@@ -95,26 +106,52 @@ class TrimSilenceTest {
         val frameLen = SilenceTrimmer.Mp3.header(silent, 0)!!.length
         val one = silent.copyOf(frameLen)
         val perSecond = first.sampleRate / first.samples
-        val out = ByteArrayOutputStream()
-        out.write(b, 0, audioStart)
-        repeat(2 * perSecond) { out.write(one) }
-        out.write(b, audioStart, end - audioStart)
-        repeat(3 * perSecond) { out.write(one) }
-        out.write(b, end, b.size - end)
-        val padded = out.toByteArray()
         // The Info frame counts the added frames too, as an encoder would have.
-        val x = listOf(p + 36, p + 21, p + 13).firstOrNull { String(padded, it, 4) == "Xing" || String(padded, it, 4) == "Info" }
+        val head = b.copyOf(audioStart)
+        val x = listOf(p + 36, p + 21, p + 13).firstOrNull { String(head, it, 4) == "Xing" || String(head, it, 4) == "Info" }
         if (x != null) {
-            val flags = padded[x + 7].toInt()
+            val flags = head[x + 7].toInt()
             fun add(at: Int, n: Int) {
-                val v = ((padded[at].toInt() and 0xFF) shl 24 or ((padded[at + 1].toInt() and 0xFF) shl 16) or ((padded[at + 2].toInt() and 0xFF) shl 8) or (padded[at + 3].toInt() and 0xFF)) + n
-                padded[at] = (v shr 24).toByte(); padded[at + 1] = (v shr 16).toByte(); padded[at + 2] = (v shr 8).toByte(); padded[at + 3] = v.toByte()
+                val v = ((head[at].toInt() and 0xFF) shl 24 or ((head[at + 1].toInt() and 0xFF) shl 16) or ((head[at + 2].toInt() and 0xFF) shl 8) or (head[at + 3].toInt() and 0xFF)) + n
+                head[at] = (v shr 24).toByte(); head[at + 1] = (v shr 16).toByte(); head[at + 2] = (v shr 8).toByte(); head[at + 3] = v.toByte()
             }
             var q = x + 8
-            if (flags and 1 != 0) { add(q, 5 * perSecond); q += 4 }
-            if (flags and 2 != 0) add(q, 5 * perSecond * frameLen)
+            if (flags and 1 != 0) { add(q, 5 * perSecond + (repeats - 1) * audioFrames); q += 4 }
+            if (flags and 2 != 0) add(q, 5 * perSecond * frameLen + (repeats - 1) * (end - audioStart))
         }
-        return padded
+        out.write(head)
+        repeat(2 * perSecond) { out.write(one) }
+        repeat(repeats) { out.write(b, audioStart, end - audioStart) }
+        repeat(3 * perSecond) { out.write(one) }
+        out.write(b, end, b.size - end)
+        return 5 * perSecond + repeats * audioFrames
+    }
+
+    /**
+     * A long mix (~130 MB, like the 127 MB "1 cena Boda 1.mp3" that closed the app): trimmed within
+     * the app's memory. It ran out of memory when the whole song was read in and cut in memory.
+     */
+    @Test
+    fun aLongMixIsTrimmedWithinTheAppsMemory() = runTest(timeout = kotlin.time.Duration.parse("5m")) {
+        val f = File(appContext.cacheDir, "trimtest-long-mix.mp3")
+        val frames = f.outputStream().buffered().use { writePaddedMp3(it, repeats = 1600) }.toLong()
+        try {
+            android.util.Log.i("TrimSilenceTest", "long mix: ${f.length()} bytes, heap limit ${Runtime.getRuntime().maxMemory()}")
+            assertTrue("${f.length()} bytes", f.length() > 120_000_000)
+            // Where its sound starts and ends is known (2 s in, 3 s before the end): decoding 2+ hours on
+            // an emulator takes longer than the test may. The memory problem was in the cut, after it.
+            val rate = 44_100
+            val known = Silence(rate, frames * 1152, 2L * rate, frames * 1152 - 3L * rate)
+            val t = writer.trimSilence(Uri.fromFile(f), "mp3") { known }
+            android.util.Log.i("TrimSilenceTest", "long mix cut ${t.startMs} + ${t.endMs} ms, now ${f.length()} bytes")
+            assertTrue("cut ${t.startMs}", t.startMs in 1700..2100)
+            assertTrue("cut ${t.endMs}", t.endMs in 2600..3100)
+            // Still a sound MP3: its Info frame counts what's in it.
+            val header = AudioFileIO.read(f).audioHeader.trackLength
+            assertTrue("length $header s", header > 7000)
+        } finally {
+            f.delete()
+        }
     }
 
     @Test

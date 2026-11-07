@@ -190,12 +190,12 @@ class SongWriter(private val context: Context) {
             context.contentResolver.openInputStream(uri)?.use { input -> copy.outputStream().use { input.copyTo(it) } }
                 ?: throw Failed("The song's file can't be read")
             val silence = findSilence(Uri.fromFile(copy))
+            // Straight from file to file: long mixes (100+ MB) don't fit in the app's memory.
             val result = try {
-                SilenceTrimmer.cut(copy.readBytes(), extension, silence)
+                cut.outputStream().buffered(256 * 1024).use { out -> SilenceTrimmer.cut(copy, extension, silence, out) }
             } catch (e: SilenceTrimmer.Unsupported) {
                 throw Failed(e.message ?: "This file can't be trimmed")
             } ?: return@withContext Trimmed(0, 0, silence.leadMs, silence.tailMs)
-            cut.writeBytes(result.bytes)
             // Never copy a damaged file over the song: it must decode, and its tags still read.
             runCatching { PcmDecoder(context).decode(Uri.fromFile(cut), object : PcmSink {
                 override fun start(sampleRate: Int, channels: Int) {}

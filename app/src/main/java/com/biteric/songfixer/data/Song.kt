@@ -94,11 +94,19 @@ data class Song(
     val silenceEndMs: Long? = null,
     /** The silence was measured (also when it failed), so it isn't tried again by itself. */
     val silenceChecked: Boolean = false,
+    /**
+     * Why the last try to cut its silence failed; null = it didn't. Such a song stays out of the
+     * batches (they'd fail on it again) until it's tried again from its sheet or the file changes.
+     */
+    val trimError: String? = null,
 ) {
     /** Enough silence at an end to be worth cutting, in a format that can be cut. */
-    val hasSilenceToTrim: Boolean
+    val silenceWorthTrimming: Boolean
         get() = extension in com.biteric.songfixer.files.SilenceTrimmer.FORMATS &&
             com.biteric.songfixer.files.SilenceTrimmer.worthIt(silenceStartMs, silenceEndMs)
+
+    /** Silence to cut, and the last try didn't fail: for "To fix", the chips and the batches. */
+    val hasSilenceToTrim: Boolean get() = silenceWorthTrimming && trimError == null
 
     /**
      * The file's volume tags follow ReplayGain 2.0, so they're left alone. Before tags were read
