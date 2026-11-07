@@ -65,6 +65,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.biteric.songfixer.BatchKind
 import com.biteric.songfixer.SongRepository
 import com.biteric.songfixer.data.SettingsState
 import com.biteric.songfixer.data.Song
@@ -77,6 +78,7 @@ fun App(vm: MainViewModel = viewModel()) {
     val songs by vm.songs.collectAsStateWithLifecycle()
     val check by vm.check.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
+    val batch by vm.batch.collectAsStateWithLifecycle()
     val lyricsToAdd by vm.lyricsToAdd.collectAsStateWithLifecycle()
     val toNormalize by vm.toNormalize.collectAsStateWithLifecycle()
     val toCorrectYear by vm.toCorrectYear.collectAsStateWithLifecycle()
@@ -143,6 +145,8 @@ fun App(vm: MainViewModel = viewModel()) {
                     settings = settings,
                     check = check,
                     busy = busy,
+                    batch = batch,
+                    onStopBatch = vm::stopBatch,
                     hasKey = settings.acoustIdKey.isNotBlank(),
                     folderName = settings.folderUri?.let(::folderLabel).orEmpty(),
                     onStart = vm::startCheck,
@@ -265,6 +269,8 @@ private fun SongList(
     settings: SettingsState,
     check: CheckState,
     busy: Boolean,
+    batch: BatchState,
+    onStopBatch: () -> Unit,
     hasKey: Boolean,
     folderName: String,
     onStart: () -> Unit,
@@ -322,6 +328,21 @@ private fun SongList(
                             Spacer(Modifier.height(8.dp))
                         }
                     }
+                    // A batch running in the background (it goes on with the app closed).
+                    batch.kind?.let { kind ->
+                        Text(
+                            kind.doing + (if (batch.total > 0) " ${batch.done} of ${batch.total}…" else "…") +
+                                (batch.queued - kind).takeIf { it.isNotEmpty() }?.let { " (then ${it.joinToString { k -> k.doing.lowercase() }})" }.orEmpty(),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        if (batch.total > 0) {
+                            LinearProgressIndicator(progress = { batch.done.toFloat() / batch.total }, Modifier.fillMaxWidth())
+                        } else {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                        OutlinedButton(onClick = onStopBatch, modifier = Modifier.padding(top = 8.dp, bottom = 8.dp)) { Text("Stop ${kind.doing.lowercase()}") }
+                    }
                     // The batch fixes stay while the check runs, for the songs checked so far.
                     run {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -330,31 +351,31 @@ private fun SongList(
                             } else {
                                 Button(onClick = onStart) { Text(if (songs.isEmpty()) "Check songs" else "Check new songs") }
                             }
-                            if (sure > 0) OutlinedButton(onClick = onFixAllSure, enabled = !busy) { Text("Fix $sure sure ones") }
+                            if (sure > 0) OutlinedButton(onClick = onFixAllSure, enabled = !busy && BatchKind.SURE !in batch.queued) { Text("Fix $sure sure ones") }
                         }
                         if (toCorrectYear > 0) {
-                            OutlinedButton(onClick = onCorrectYears, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) {
+                            OutlinedButton(onClick = onCorrectYears, enabled = !busy && BatchKind.YEARS !in batch.queued, modifier = Modifier.padding(top = 8.dp)) {
                                 Icon(Icons.Default.CalendarMonth, contentDescription = null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text(if (toCorrectYear == 1) "Correct year in 1 song" else "Correct year in $toCorrectYear songs")
                             }
                         }
                         if (toNormalize > 0) {
-                            OutlinedButton(onClick = onNormalizeAll, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) {
+                            OutlinedButton(onClick = onNormalizeAll, enabled = !busy && BatchKind.NORMALIZE !in batch.queued, modifier = Modifier.padding(top = 8.dp)) {
                                 Icon(Icons.Default.GraphicEq, contentDescription = null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text(if (toNormalize == 1) "Normalize 1 song" else "Normalize $toNormalize songs")
                             }
                         }
                         if (toTrim > 0) {
-                            OutlinedButton(onClick = onTrimAll, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) {
+                            OutlinedButton(onClick = onTrimAll, enabled = !busy && BatchKind.TRIM !in batch.queued, modifier = Modifier.padding(top = 8.dp)) {
                                 Icon(Icons.Default.ContentCut, contentDescription = null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text(if (toTrim == 1) "Trim silence in 1 song" else "Trim silence in $toTrim songs")
                             }
                         }
                         if (lyricsToAdd > 0) {
-                            OutlinedButton(onClick = onAddAllLyrics, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) {
+                            OutlinedButton(onClick = onAddAllLyrics, enabled = !busy && BatchKind.LYRICS !in batch.queued, modifier = Modifier.padding(top = 8.dp)) {
                                 Icon(Icons.Default.Lyrics, contentDescription = null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text(if (lyricsToAdd == 1) "Add lyrics to 1 song" else "Add lyrics to $lyricsToAdd songs")

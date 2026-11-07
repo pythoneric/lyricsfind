@@ -7,6 +7,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.biteric.songfixer.BatchKind
+import com.biteric.songfixer.BatchWorker
 import com.biteric.songfixer.CheckWorker
 import com.biteric.songfixer.SongFixerApp
 import com.biteric.songfixer.data.SettingsState
@@ -26,6 +28,16 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /** The background check as the screen shows it. */
+/** [kind] is running ([done] of [total]); [queued] holds it and the kinds waiting after it. */
+data class BatchState(
+    val kind: BatchKind? = null,
+    val done: Int = 0,
+    val total: Int = 0,
+    val queued: Set<BatchKind> = emptySet(),
+) {
+    val active: Boolean get() = queued.isNotEmpty()
+}
+
 data class CheckState(
     val running: Boolean = false,
     val done: Int = 0,
@@ -86,6 +98,46 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _message = MutableStateFlow<String?>(null)
     /** A one-off note for a snackbar. */
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    /** The batch running in the background (and the ones queued after it), as the screen shows it. */
+    val batch: StateFlow<BatchState> = workManager.getWorkInfosForUniqueWorkFlow(BatchWorker.WORK_NAME)
+        .map { infos ->
+            val waiting = infos.filter { !it.state.isFinished }
+            val running = waiting.firstOrNull { it.state == WorkInfo.State.RUNNING }
+            reportFinished(infos)
+            BatchState(
+                kind = running?.progress?.getString(BatchWorker.KEY_KIND)?.let { k -> BatchKind.entries.firstOrNull { it.name == k } }
+                    ?: running?.let(::kindOf),
+                done = running?.progress?.getInt(BatchWorker.KEY_DONE, 0) ?: 0,
+                total = running?.progress?.getInt(BatchWorker.KEY_TOTAL, 0) ?: 0,
+                queued = waiting.mapNotNull(::kindOf).toSet(),
+            )
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, BatchState())
+
+    private fun kindOf(info: WorkInfo): BatchKind? =
+        info.tags.firstNotNullOfOrNull { t -> t.removePrefix(BatchWorker.TAG_PREFIX).takeIf { t.startsWith(BatchWorker.TAG_PREFIX) } }
+            ?.let { k -> BatchKind.entries.firstOrNull { it.name == k } }
+
+    /** Batches seen unfinished while the screen is open; their result is said when they finish (once). */
+    private val watchedBatches = mutableSetOf<java.util.UUID>()
+
+    private fun reportFinished(infos: List<WorkInfo>) {
+        for (info in infos) {
+            if (!info.state.isFinished) {
+                watchedBatches += info.id
+            } else if (watchedBatches.remove(info.id)) {
+                when (info.state) {
+                    WorkInfo.State.SUCCEEDED -> info.outputData.getString(BatchWorker.KEY_MESSAGE)?.let { _message.value = it }
+                    WorkInfo.State.CANCELLED -> _message.value = (kindOf(info)?.doing ?: "Fixing") + " stopped"
+                    else -> _message.value = (kindOf(info)?.doing ?: "Fixing") + " stopped by an error"
+                }
+            }
+        }
+    }
+
+    /** Stops the running batch and the ones queued after it (what's done stays done). */
+    fun stopBatch() = BatchWorker.stop(getApplication())
     /** The song the current message is about, when it can be played to check it (after a fix). */
     var messageSongId: Long? = null
         private set
@@ -177,23 +229,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val toTrim: StateFlow<Int> = repo.songs.map { SongRepository.needTrimming(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     /** Cuts the silence off every song that has some. */
-    fun trimAll() = work("Trimming stopped") {
-        var trimmed = 0
-        var failed = 0
-        for (listed in SongRepository.needTrimming(songs.value)) {
-            try {
-                val song = repo.get(listed.id)?.takeIf { it.hasSilenceToTrim } ?: continue
-                when (repo.trimSilence(song).trim) {
-                    SongRepository.TrimOutcome.TRIMMED -> trimmed++
-                    SongRepository.TrimOutcome.FAILED -> failed++
-                    else -> {}
-                }
-            } catch (e: Exception) {
-                failed++
-            }
-        }
-        _message.value = "Silence cut from $trimmed " + (if (trimmed == 1) "song" else "songs") + if (failed > 0) ", $failed couldn't be trimmed" else ""
-    }
+    fun trimAll() = BatchWorker.start(getApplication(), BatchKind.TRIM)
 
     /** "Trim silence only" in the sheet. */
     fun trimSilence(song: Song) = work("Couldn't trim it") {
@@ -213,24 +249,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val toNormalize: StateFlow<Int> = repo.songs.map { SongRepository.needNormalizing(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     /** Writes ReplayGain tags into every measured song without standard ones. */
-    fun normalizeAll() = work("Normalizing stopped") {
-        var added = 0
-        var kept = 0
-        var failed = 0
-        for (listed in SongRepository.needNormalizing(songs.value)) {
-            try {
-                val song = repo.get(listed.id)?.takeIf(SongRepository::needsNormalizing) ?: continue
-                when (repo.normalize(song).volume) {
-                    SongRepository.LyricsOutcome.ADDED -> added++
-                    SongRepository.LyricsOutcome.ALREADY_THERE -> kept++
-                    else -> failed++
-                }
-            } catch (e: Exception) {
-                failed++
-            }
-        }
-        _message.value = "Volume tagged in $added songs" + (if (kept > 0) ", $kept already standard" else "") + if (failed > 0) ", $failed couldn't be changed" else ""
-    }
+    fun normalizeAll() = BatchWorker.start(getApplication(), BatchKind.NORMALIZE)
 
     fun normalize(song: Song) = work("Couldn't tag the volume") {
         val done = repo.normalize(song)
@@ -257,58 +276,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { repo.coverPreview(releaseGroupId, album, artist) }.getOrNull()
 
     /** Applies every sure suggestion with the default options. */
-    fun applyAllSure() = work("Fixing stopped") {
-        val s = settings.value
-        var fixed = 0
-        var failed = 0
-        var lyrics = 0
-        for ((listed, c) in repo.sureOnes(songs.value)) {
-            try {
-                val song = repo.get(listed.id)?.takeIf { it.status == SongStatus.SUGGESTED } ?: continue
-                // A song whose only problem is its year gets just the year (no rename, names as they are).
-                val done = repo.apply(song, SongRepository.surePlan(song, c, s))
-                if (done.lyrics == SongRepository.LyricsOutcome.ADDED) lyrics++
-                fixed++
-            } catch (e: Exception) {
-                failed++
-            }
-        }
-        _message.value = "Fixed $fixed songs" + (if (s.addLyrics) ", lyrics added to $lyrics" else "") + if (failed > 0) ", $failed couldn't be changed" else ""
-    }
+    fun applyAllSure() = BatchWorker.start(getApplication(), BatchKind.SURE)
 
     /** Songs whose names are right and only the year is wrong. */
     val toCorrectYear: StateFlow<Int> = repo.songs.map { SongRepository.yearOnly(it).size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     /** Writes the match's year into every song whose only problem is the year; nothing else is changed. */
-    fun correctYears() = work("Correcting years stopped") {
-        var done = 0
-        var failed = 0
-        for (listed in SongRepository.yearOnly(songs.value)) {
-            try {
-                val song = repo.get(listed.id)?.takeIf(SongRepository::isYearOnly) ?: continue
-                repo.apply(song, SongRepository.yearOnlyPlan(song, settings.value, extras = false))
-                done++
-            } catch (e: Exception) {
-                failed++
-            }
-        }
-        _message.value = "Year corrected in " + (if (done == 1) "1 song" else "$done songs") + if (failed > 0) ", $failed couldn't be changed" else ""
-    }
+    fun correctYears() = BatchWorker.start(getApplication(), BatchKind.YEARS)
 
     /** Adds lyrics to the songs that are named right but have none in the file yet. */
-    fun addLyricsToAll() = work("Adding lyrics stopped") {
-        var added = 0
-        var failed = 0
-        for (listed in repo.needLyrics(songs.value)) {
-            try {
-                val song = repo.get(listed.id)?.takeIf(SongRepository::needsLyrics) ?: continue
-                if (repo.addLyrics(song).lyrics == SongRepository.LyricsOutcome.ADDED) added++
-            } catch (e: Exception) {
-                failed++
-            }
-        }
-        _message.value = "Lyrics added to $added songs" + if (failed > 0) ", $failed couldn't be changed" else ""
-    }
+    fun addLyricsToAll() = BatchWorker.start(getApplication(), BatchKind.LYRICS)
 
     private val _lyricsSearch = MutableStateFlow(LyricsSearch())
     /** The "Find lyrics" dialog's search. */

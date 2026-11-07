@@ -624,4 +624,7 @@ class SongRepository(
         songs.filter { it.status == SongStatus.SUGGESTED }.mapNotNull { s -> s.best?.takeIf { it.sure }?.let { s to it } }
 
     suspend fun get(id: Long) = dao.get(id)
+
+    /** Every song as saved now. */
+    suspend fun allSongs() = dao.all()
 }
