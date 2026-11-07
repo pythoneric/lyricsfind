@@ -226,6 +226,10 @@ class SongRepository(
             } catch (e: Exception) {
                 trimError = e.message
                 TrimOutcome.FAILED
+            } catch (e: OutOfMemoryError) {
+                // Never again expected (the trim streams), but one song must not close the app mid-batch.
+                trimError = "the song is too big to trim"
+                TrimOutcome.FAILED
             }
         }
         val title = names.title.ifBlank { song.title.orEmpty() }

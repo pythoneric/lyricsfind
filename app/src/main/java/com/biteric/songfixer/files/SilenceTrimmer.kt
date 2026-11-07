@@ -3,11 +3,18 @@ package com.biteric.songfixer.files
 import com.biteric.songfixer.loudness.Silence
 import com.biteric.songfixer.loudness.SilenceDetector
 import java.io.ByteArrayOutputStream
+import java.io.Closeable
+import java.io.File
+import java.io.OutputStream
+import java.io.RandomAccessFile
 
 /**
  * Cuts the silence off a song's start and end without re-encoding it: whole MP3 frames
  * (~26 ms each), whole FLAC frames, or single WAV samples. Tags at the start and end of the
  * file are kept as they are; the headers that give the song's length are corrected.
+ *
+ * The song is read from its file a window at a time and the cut written out as it goes, so a
+ * two-hour mix takes no more memory than a short song.
  */
 object SilenceTrimmer {
     val FORMATS = setOf("mp3", "flac", "wav")
@@ -19,8 +26,66 @@ object SilenceTrimmer {
 
     class Unsupported(message: String) : Exception(message)
 
-    /** The trimmed file, and how much was cut at each end. */
-    class Cut(val bytes: ByteArray, val startMs: Long, val endMs: Long)
+    /** How much was cut at each end; [bytes] is the trimmed file when it was cut in memory. */
+    class Cut(val startMs: Long, val endMs: Long, private val data: ByteArray? = null) {
+        val bytes: ByteArray get() = data ?: error("The cut was written to a stream")
+    }
+
+    /** The song's bytes, by position. */
+    internal abstract class Src : Closeable {
+        abstract val size: Int
+        abstract operator fun get(i: Int): Byte
+        /** Writes bytes [from] until [from] + [length] to [out]. */
+        abstract fun writeTo(out: OutputStream, from: Int, length: Int)
+        fun copyOfRange(from: Int, to: Int): ByteArray = ByteArrayOutputStream(to - from).also { writeTo(it, from, to - from) }.toByteArray()
+        override fun close() {}
+    }
+
+    internal class ArraySrc(private val b: ByteArray) : Src() {
+        override val size get() = b.size
+        override fun get(i: Int) = b[i]
+        override fun writeTo(out: OutputStream, from: Int, length: Int) = out.write(b, from, length)
+    }
+
+    /** A file read through a window of [WINDOW] bytes that follows the reads (forwards, and a little back). */
+    internal class FileSrc(file: File) : Src() {
+        private val raf = RandomAccessFile(file, "r")
+        override val size: Int = raf.length().also { if (it > Int.MAX_VALUE) throw Unsupported("The file is too big to trim") }.toInt()
+        private val window = ByteArray(WINDOW)
+        private var windowStart = 0
+        private var windowLength = 0
+
+        override fun get(i: Int): Byte {
+            if (i < windowStart || i >= windowStart + windowLength) {
+                // Some room behind: FLAC frames are checked from their start once the next one is found.
+                windowStart = (i - BACK).coerceAtLeast(0)
+                raf.seek(windowStart.toLong())
+                windowLength = raf.read(window, 0, minOf(WINDOW, size - windowStart)).coerceAtLeast(0)
+                if (i >= windowStart + windowLength) throw IndexOutOfBoundsException("$i of $size")
+            }
+            return window[i - windowStart]
+        }
+
+        override fun writeTo(out: OutputStream, from: Int, length: Int) {
+            val buf = ByteArray(COPY)
+            raf.seek(from.toLong())
+            var left = length
+            while (left > 0) {
+                val n = raf.read(buf, 0, minOf(COPY, left))
+                if (n <= 0) throw java.io.EOFException("The song's file ended early")
+                out.write(buf, 0, n)
+                left -= n
+            }
+        }
+
+        override fun close() = raf.close()
+
+        private companion object {
+            const val WINDOW = 1 shl 20
+            const val BACK = 256 * 1024
+            const val COPY = 256 * 1024
+        }
+    }
 
     /** True when either end has enough silence to be worth cutting. */
     fun worthIt(leadMs: Long?, tailMs: Long?): Boolean =
@@ -38,13 +103,23 @@ object SilenceTrimmer {
         return longArrayOf(start, end)
     }
 
-    /** The trimmed file; null when there's nothing worth cutting. */
+    /** The trimmed file, in memory; null when there's nothing worth cutting. */
     fun cut(bytes: ByteArray, extension: String, silence: Silence): Cut? {
+        val out = ByteArrayOutputStream(bytes.size)
+        val cut = cut(ArraySrc(bytes), extension, silence, out) ?: return null
+        return Cut(cut.startMs, cut.endMs, out.toByteArray())
+    }
+
+    /** Trims [file] into [out] (nothing is written when it returns null: nothing worth cutting). */
+    fun cut(file: File, extension: String, silence: Silence, out: OutputStream): Cut? =
+        FileSrc(file).use { cut(it, extension, silence, out) }
+
+    private fun cut(b: Src, extension: String, silence: Silence, out: OutputStream): Cut? {
         val (start, end) = plan(silence) ?: return null
         return when (extension.lowercase()) {
-            "mp3" -> Mp3.cut(bytes, start, end, silence)
-            "flac" -> Flac.cut(bytes, start, end, silence)
-            "wav" -> Wav.cut(bytes, start, end, silence)
+            "mp3" -> Mp3.cut(b, start, end, silence, out)
+            "flac" -> Flac.cut(b, start, end, silence, out)
+            "wav" -> Wav.cut(b, start, end, silence, out)
             else -> throw Unsupported(".$extension files can't be trimmed here")
         }
     }
@@ -53,19 +128,21 @@ object SilenceTrimmer {
 
     private fun ms(samples: Long, rate: Int): Long = samples * 1000 / rate
 
+    private fun u8(b: Src, i: Int) = b[i].toInt() and 0xFF
     private fun u8(b: ByteArray, i: Int) = b[i].toInt() and 0xFF
     private fun be32(b: ByteArray, i: Int) = (u8(b, i) shl 24) or (u8(b, i + 1) shl 16) or (u8(b, i + 2) shl 8) or u8(b, i + 3)
     private fun putBe32(b: ByteArray, i: Int, v: Int) {
         b[i] = (v ushr 24).toByte(); b[i + 1] = (v ushr 16).toByte(); b[i + 2] = (v ushr 8).toByte(); b[i + 3] = v.toByte()
     }
-    private fun le32(b: ByteArray, i: Int) = u8(b, i) or (u8(b, i + 1) shl 8) or (u8(b, i + 2) shl 16) or (u8(b, i + 3) shl 24)
+    private fun le32(b: Src, i: Int) = u8(b, i) or (u8(b, i + 1) shl 8) or (u8(b, i + 2) shl 16) or (u8(b, i + 3) shl 24)
     private fun putLe32(b: ByteArray, i: Int, v: Int) {
         b[i] = v.toByte(); b[i + 1] = (v ushr 8).toByte(); b[i + 2] = (v ushr 16).toByte(); b[i + 3] = (v ushr 24).toByte()
     }
+    private fun ascii(b: Src, i: Int, s: String) = i >= 0 && i + s.length <= b.size && s.indices.all { b[i + it] == s[it].code.toByte() }
     private fun ascii(b: ByteArray, i: Int, s: String) = i >= 0 && i + s.length <= b.size && s.indices.all { b[i + it] == s[it].code.toByte() }
 
     /** Bytes of the ID3v2 tags at the start of [b] (0 when none). */
-    private fun id3v2Length(b: ByteArray): Int {
+    private fun id3v2Length(b: Src): Int {
         var p = 0
         while (ascii(b, p, "ID3") && p + 10 <= b.size) {
             val size = (u8(b, p + 6) shl 21) or (u8(b, p + 7) shl 14) or (u8(b, p + 8) shl 7) or u8(b, p + 9)
@@ -85,8 +162,10 @@ object SilenceTrimmer {
         /** An MPEG audio Layer III frame header. */
         class Header(val version: Int, val sampleRate: Int, val length: Int, val samples: Int, val mono: Boolean, val crc: Boolean)
 
-        fun header(b: ByteArray, p: Int): Header? {
-            if (p + 4 > b.size || u8(b, p) != 0xFF || u8(b, p + 1) and 0xE0 != 0xE0) return null
+        fun header(b: ByteArray, p: Int): Header? = header(ArraySrc(b), p)
+
+        internal fun header(b: Src, p: Int): Header? {
+            if (p < 0 || p + 4 > b.size || u8(b, p) != 0xFF || u8(b, p + 1) and 0xE0 != 0xE0) return null
             val version = (u8(b, p + 1) shr 3) and 3 // 0 = 2.5, 2 = 2, 3 = 1
             val layer = (u8(b, p + 1) shr 1) and 3
             val bitrateIndex = u8(b, p + 2) shr 4
@@ -102,7 +181,7 @@ object SilenceTrimmer {
 
         private fun sameStream(a: Header, b: Header) = a.version == b.version && a.sampleRate == b.sampleRate
 
-        fun cut(b: ByteArray, startWanted: Long, endWanted: Long, silence: Silence): Cut? {
+        fun cut(b: Src, startWanted: Long, endWanted: Long, silence: Silence, out: OutputStream): Cut? {
             var p = id3v2Length(b)
             // The first frame: one whose next frame follows right after it.
             var found: Header? = null
@@ -117,11 +196,13 @@ object SilenceTrimmer {
             }
             val first = found ?: throw Unsupported("No MP3 frames found")
             val head = p
-            val offsets = ArrayList<Int>()
+            var offsets = IntArray(1 shl 14)
+            var count = 0
             while (true) {
                 val h = header(b, p) ?: break
                 if (!sameStream(h, first) || p + h.length > b.size) break
-                offsets += p
+                if (count == offsets.size) offsets = offsets.copyOf(count * 2)
+                offsets[count++] = p
                 p += h.length
             }
             val audioEnd = p
@@ -139,7 +220,7 @@ object SilenceTrimmer {
             }
             if (ascii(b, head + 36, "VBRI")) throw Unsupported("MP3s with a VBRI header can't be trimmed here")
             val audioFirst = if (xing >= 0) 1 else 0
-            val frames = offsets.size - audioFirst
+            val frames = count - audioFirst
             if (frames <= 0) throw Unsupported("No MP3 frames found")
 
             // Sample positions → frames. The decoder's own delay (~1 frame) puts sound slightly later
@@ -155,26 +236,26 @@ object SilenceTrimmer {
             if (keepFrom == 0 && keepTo == frames) return null
             if (keepTo - keepFrom < 2) throw Unsupported("Nothing would be left of the song")
 
-            fun offsetOf(i: Int) = if (audioFirst + i < offsets.size) offsets[audioFirst + i] else audioEnd
+            val offsetsSoFar = offsets
+            fun offsetOf(i: Int) = if (audioFirst + i < count) offsetsSoFar[audioFirst + i] else audioEnd
             val keptStart = offsetOf(keepFrom)
             val keptEnd = offsetOf(keepTo)
-            val out = ByteArrayOutputStream(b.size)
-            out.write(b, 0, head)
-            val infoFrame = if (xing >= 0) b.copyOfRange(head, offsets[1]) else null
-            if (infoFrame != null) {
+            b.writeTo(out, 0, head)
+            if (xing >= 0) {
+                val infoFrame = b.copyOfRange(head, offsets[1])
                 val removedBytes = (keptStart - offsets[1]) + (audioEnd - keptEnd)
                 fixInfo(infoFrame, xing - head, frames - (keepTo - keepFrom), removedBytes, b, keptStart, keptEnd, keepFrom, keepTo, ::offsetOf)
                 out.write(infoFrame)
             }
-            out.write(b, keptStart, keptEnd - keptStart)
-            out.write(b, audioEnd, b.size - audioEnd)
-            return Cut(out.toByteArray(), ms(keepFrom * spf, first.sampleRate), ms((frames - keepTo) * spf, first.sampleRate))
+            b.writeTo(out, keptStart, keptEnd - keptStart)
+            b.writeTo(out, audioEnd, b.size - audioEnd)
+            return Cut(ms(keepFrom * spf, first.sampleRate), ms((frames - keepTo) * spf, first.sampleRate))
         }
 
         /** Corrects the Xing/Info frame's frame and byte counts, seek table and LAME tag for the cut. */
         private fun fixInfo(
             f: ByteArray, x: Int, removedFrames: Int, removedBytes: Int,
-            b: ByteArray, keptStart: Int, keptEnd: Int, keepFrom: Int, keepTo: Int, offsetOf: (Int) -> Int,
+            b: Src, keptStart: Int, keptEnd: Int, keepFrom: Int, keepTo: Int, offsetOf: (Int) -> Int,
         ) {
             val flags = be32(f, x + 4)
             var p = x + 8
@@ -186,7 +267,7 @@ object SilenceTrimmer {
                 val n = keepTo - keepFrom
                 val total = (totalBytes.takeIf { it > 0 } ?: (f.size + keptEnd - keptStart)).toDouble()
                 for (i in 0 until 100) {
-                    val frame = keepFrom + (i * n / 100)
+                    val frame = keepFrom + (i.toLong() * n / 100).toInt()
                     val pos = f.size + (offsetOf(frame) - keptStart)
                     f[p + i] = (pos / total * 256).toInt().coerceIn(0, 255).toByte()
                 }
@@ -204,13 +285,18 @@ object SilenceTrimmer {
             }
         }
 
+        private val ARC = IntArray(256) { i ->
+            var c = i
+            repeat(8) { c = if (c and 1 != 0) (c ushr 1) xor 0xA001 else c ushr 1 }
+            c
+        }
+
         /** CRC-16/ARC (poly 0x8005 reflected), as LAME's tag uses. */
-        fun crc16Arc(b: ByteArray, from: Int, to: Int): Int {
+        fun crc16Arc(b: ByteArray, from: Int, to: Int): Int = crc16Arc(ArraySrc(b), from, to)
+
+        internal fun crc16Arc(b: Src, from: Int, to: Int): Int {
             var crc = 0
-            for (i in from until to) {
-                crc = crc xor u8(b, i)
-                repeat(8) { crc = if (crc and 1 != 0) (crc ushr 1) xor 0xA001 else crc ushr 1 }
-            }
+            for (i in from until to) crc = (crc ushr 8) xor ARC[(crc xor u8(b, i)) and 0xFF]
             return crc and 0xFFFF
         }
     }
@@ -229,13 +315,17 @@ object SilenceTrimmer {
             c and 0xFFFF
         }
 
-        fun crc8(b: ByteArray, from: Int, to: Int): Int {
+        fun crc8(b: ByteArray, from: Int, to: Int): Int = crc8(ArraySrc(b), from, to)
+
+        internal fun crc8(b: Src, from: Int, to: Int): Int {
             var c = 0
             for (i in from until to) c = CRC8[c xor u8(b, i)]
             return c
         }
 
-        fun crc16(b: ByteArray, from: Int, to: Int): Int {
+        fun crc16(b: ByteArray, from: Int, to: Int): Int = crc16(ArraySrc(b), from, to)
+
+        internal fun crc16(b: Src, from: Int, to: Int): Int {
             var c = 0
             for (i in from until to) c = ((c shl 8) xor CRC16[(c ushr 8) xor u8(b, i)]) and 0xFFFF
             return c
@@ -244,7 +334,9 @@ object SilenceTrimmer {
         /** A frame header: its [number] (frame or sample number), block size and length in bytes; null when not valid. */
         class Header(val number: Long, val blockSize: Int, val length: Int, val variable: Boolean, val numberAt: Int, val numberLength: Int)
 
-        fun header(b: ByteArray, p: Int): Header? {
+        fun header(b: ByteArray, p: Int): Header? = header(ArraySrc(b), p)
+
+        internal fun header(b: Src, p: Int): Header? {
             if (p + 6 > b.size || u8(b, p) != 0xFF || u8(b, p + 1) and 0xFE != 0xF8) return null
             val bsCode = u8(b, p + 2) shr 4
             val srCode = u8(b, p + 2) and 0xF
@@ -296,7 +388,7 @@ object SilenceTrimmer {
             }
         }
 
-        fun cut(b: ByteArray, startWanted: Long, endWanted: Long, silence: Silence): Cut? {
+        fun cut(b: Src, startWanted: Long, endWanted: Long, silence: Silence, out: OutputStream): Cut? {
             val tagged = id3v2Length(b)
             if (!ascii(b, tagged, "fLaC")) throw Unsupported("Not a FLAC file")
             // Metadata blocks.
@@ -318,13 +410,14 @@ object SilenceTrimmer {
             if (rate <= 0) throw Unsupported("The FLAC file has no sample rate")
 
             // Frames: each next one is found by its header (CRC-8 and number) and checked by the CRC-16 ending the one before.
-            val starts = ArrayList<Int>()
+            var starts = IntArray(1 shl 12)
             val heads = ArrayList<Header>()
             var h = header(b, p) ?: throw Unsupported("The FLAC frames couldn't be read")
             var end = b.size
             if (end - 128 > p && ascii(b, end - 128, "TAG")) end -= 128
             while (true) {
-                starts += p
+                if (heads.size + 1 >= starts.size) starts = starts.copyOf(starts.size * 2)
+                starts[heads.size] = p
                 heads += h
                 val expected = if (h.variable) h.number + h.blockSize else h.number + 1
                 var q = p + h.length + 2
@@ -338,7 +431,7 @@ object SilenceTrimmer {
                 }
                 if (next == null) {
                     if (crc16(b, p, end - 2) != ((u8(b, end - 2) shl 8) or u8(b, end - 1))) throw Unsupported("The FLAC frames couldn't be followed to the end")
-                    starts += end
+                    starts[heads.size] = end
                     break
                 }
                 p = q
@@ -359,9 +452,7 @@ object SilenceTrimmer {
             }
             if (keepFrom == 0 && keepTo == n) return null
 
-            val out = ByteArrayOutputStream(b.size)
-            out.write(b, 0, starts[0])
-            val meta = out.toByteArray()
+            val meta = b.copyOfRange(0, starts[0])
             // Total samples (36 bits), MD5 and frame sizes unknown now; seek tables become padding.
             val kept = firstSample[keepTo] - firstSample[keepFrom]
             val si = streamInfo
@@ -376,35 +467,34 @@ object SilenceTrimmer {
                     for (k in 0 until len) meta[bp + 4 + k] = 0
                 }
             }
-            val frames = ByteArrayOutputStream(b.size)
-            frames.write(meta)
+            out.write(meta)
             for (i in keepFrom until keepTo) {
                 val hd = heads[i]
                 val fp = starts[i]
                 val number = if (hd.variable) firstSample[i] - firstSample[keepFrom] else (i - keepFrom).toLong()
                 val f = ByteArrayOutputStream(starts[i + 1] - fp + 8)
-                f.write(b, fp, hd.numberAt - fp)
+                b.writeTo(f, fp, hd.numberAt - fp)
                 f.write(utf8(number))
                 val afterNumber = hd.numberAt + hd.numberLength
-                f.write(b, afterNumber, fp + hd.length - 1 - afterNumber)
+                b.writeTo(f, afterNumber, fp + hd.length - 1 - afterNumber)
                 val headBytes = f.toByteArray()
                 f.write(crc8(headBytes, 0, headBytes.size))
-                f.write(b, fp + hd.length, starts[i + 1] - 2 - (fp + hd.length))
+                b.writeTo(f, fp + hd.length, starts[i + 1] - 2 - (fp + hd.length))
                 val frame = f.toByteArray()
                 val crc = crc16(frame, 0, frame.size)
-                frames.write(frame)
-                frames.write(crc shr 8)
-                frames.write(crc and 0xFF)
+                out.write(frame)
+                out.write(crc shr 8)
+                out.write(crc and 0xFF)
             }
-            frames.write(b, end, b.size - end)
-            return Cut(frames.toByteArray(), ms(firstSample[keepFrom], rate), ms(firstSample[n] - firstSample[keepTo], rate))
+            b.writeTo(out, end, b.size - end)
+            return Cut(ms(firstSample[keepFrom], rate), ms(firstSample[n] - firstSample[keepTo], rate))
         }
     }
 
     // ---------------------------------------------------------------- WAV
 
     internal object Wav {
-        fun cut(b: ByteArray, startWanted: Long, endWanted: Long, silence: Silence): Cut? {
+        fun cut(b: Src, startWanted: Long, endWanted: Long, silence: Silence, out: OutputStream): Cut? {
             if (!ascii(b, 0, "RIFF") || !ascii(b, 8, "WAVE")) throw Unsupported("Only plain RIFF WAV files can be trimmed")
             var p = 12
             var align = 0
@@ -432,15 +522,17 @@ object SilenceTrimmer {
             val payload = data + 8
             val oldChunkEnd = payload + dataLen + (dataLen and 1)
             val newLen = ((end - start) * align).toInt()
-            val out = ByteArrayOutputStream(b.size)
-            out.write(b, 0, payload)
-            out.write(b, payload + (start * align).toInt(), newLen)
-            if (newLen and 1 == 1) out.write(0)
-            if (oldChunkEnd < b.size) out.write(b, oldChunkEnd, b.size - oldChunkEnd)
-            val o = out.toByteArray()
-            putLe32(o, data + 4, newLen)
-            putLe32(o, 4, o.size - 8)
-            return Cut(o, ms(start, rate), ms(total - end, rate))
+            val pad = newLen and 1
+            val after = (b.size - oldChunkEnd).coerceAtLeast(0)
+            // Everything up to the audio, with the new sizes.
+            val headBytes = b.copyOfRange(0, payload)
+            putLe32(headBytes, data + 4, newLen)
+            putLe32(headBytes, 4, payload + newLen + pad + after - 8)
+            out.write(headBytes)
+            b.writeTo(out, payload + (start * align).toInt(), newLen)
+            if (pad == 1) out.write(0)
+            if (after > 0) b.writeTo(out, oldChunkEnd, after)
+            return Cut(ms(start, rate), ms(total - end, rate))
         }
     }
 }
