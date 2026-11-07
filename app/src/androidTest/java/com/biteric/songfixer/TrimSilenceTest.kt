@@ -15,6 +15,8 @@ import kotlinx.coroutines.test.runTest
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -193,7 +195,7 @@ class TrimSilenceTest {
             f.renameTo(renamed)
             db.songs().update(song.copy(uri = Uri.fromFile(renamed).toString(), fileName = renamed.name, status = SongStatus.FIXED))
             val saved = db.songs().saveMeasurement(
-                song.id, song.uri, -9.0, -9.0, 0.9, true, 3000, 4000, true, null, null, null, "NONE", false,
+                song.id, song.uri, -9.0, -9.0, 0.9, true, 3000, 4000, true, null, null, null, "NONE", false, null,
             )
             assertEquals(0, saved)
             val row = db.songs().get(song.id)!!
@@ -211,6 +213,136 @@ class TrimSilenceTest {
             db.close()
             f.delete()
             renamed.delete()
+        }
+    }
+
+    /** A measured song in an in-memory database with the real repository, and its file. */
+    private suspend fun measuredSong(db: SongDatabase, repo: SongRepository, name: String): Pair<Song, File> {
+        val f = file(name, paddedMp3())
+        db.songs().insert(listOf(Song(uri = Uri.fromFile(f).toString(), fileName = f.name, folder = "", size = f.length(), modified = f.lastModified(), status = SongStatus.OK, durationMs = 15_000)))
+        while (repo.measureNext()) Unit
+        return db.songs().all().single { it.fileName == f.name } to f
+    }
+
+    private fun md5(f: File) = java.security.MessageDigest.getInstance("MD5").digest(f.readBytes()).joinToString("") { "%02x".format(it) }
+
+    /**
+     * Fast trims: with the file just as it was measured, the trim cuts where the stored mark says,
+     * without listening again. Proved with a mark that says the sound starts later than it does.
+     */
+    @Test
+    fun anUnchangedFileIsTrimmedFromTheStoredMark() = runTest {
+        val db = Room.inMemoryDatabaseBuilder(appContext, SongDatabase::class.java).build()
+        val repo = testRepository(appContext, db)
+        try {
+            val (song, f) = measuredSong(db, repo, "mark.mp3")
+            val mark = com.biteric.songfixer.loudness.SilenceMark.decode(song.silenceMark)!!
+            assertTrue(mark.matches(writer.stamp(Uri.fromFile(f))))
+            // The stored mark, moved: sound from 4 s on (it really starts at ~2 s).
+            val moved = mark.copy(silence = mark.silence.copy(soundStart = 4L * mark.silence.sampleRate))
+            db.songs().update(song.copy(silenceMark = moved.encode(), silenceStartMs = 4000))
+            val started = System.nanoTime()
+            val done = repo.trimSilence(db.songs().get(song.id)!!)
+            android.util.Log.i("TrimSilenceTest", "trim from the mark took ${(System.nanoTime() - started) / 1_000_000} ms, cut ${done.trimmed?.startMs}+${done.trimmed?.endMs}")
+            assertEquals(SongRepository.TrimOutcome.TRIMMED, done.trim)
+            assertTrue("cut ${done.trimmed!!.startMs}", done.trimmed!!.startMs in 3700..4000)
+            // The audio changed: no mark until it's measured again.
+            assertNull(db.songs().get(song.id)!!.silenceMark)
+        } finally {
+            db.close()
+            File(appContext.cacheDir, "trimtest-mark.mp3").delete()
+        }
+    }
+
+    /** Songs measured by an older version (silence known, no exact mark) get their mark in the check, so trimming them is fast. */
+    @Test
+    fun songsMeasuredBeforeGetTheirMarkInTheCheck() = runTest {
+        val db = Room.inMemoryDatabaseBuilder(appContext, SongDatabase::class.java).build()
+        val repo = testRepository(appContext, db)
+        try {
+            val (song, f) = measuredSong(db, repo, "old.mp3")
+            // As an older version left it: silence measured, no mark.
+            db.songs().update(song.copy(silenceMark = null))
+            assertEquals(1, repo.unmeasuredCount())
+            while (repo.measureNext()) Unit
+            val marked = db.songs().get(song.id)!!
+            assertTrue(com.biteric.songfixer.loudness.SilenceMark.decode(marked.silenceMark)!!.matches(writer.stamp(Uri.fromFile(f))))
+            assertEquals(0, repo.unmeasuredCount())
+        } finally {
+            db.close()
+            File(appContext.cacheDir, "trimtest-old.mp3").delete()
+        }
+    }
+
+    /** A file changed since it was measured is listened to again: the stored mark isn't trusted. */
+    @Test
+    fun aChangedFileIsListenedToAgain() = runTest {
+        val db = Room.inMemoryDatabaseBuilder(appContext, SongDatabase::class.java).build()
+        val repo = testRepository(appContext, db)
+        try {
+            val (song, f) = measuredSong(db, repo, "changed.mp3")
+            val mark = com.biteric.songfixer.loudness.SilenceMark.decode(song.silenceMark)!!
+            db.songs().update(song.copy(silenceMark = mark.copy(silence = mark.silence.copy(soundStart = 4L * mark.silence.sampleRate)).encode()))
+            // Changed meanwhile (by another app): another time on it.
+            f.setLastModified(f.lastModified() - 60_000)
+            val done = repo.trimSilence(db.songs().get(song.id)!!)
+            assertEquals(SongRepository.TrimOutcome.TRIMMED, done.trim)
+            // Where the sound really starts (~2 s), not where the old mark said.
+            assertTrue("cut ${done.trimmed!!.startMs}", done.trimmed!!.startMs in 1700..2100)
+        } finally {
+            db.close()
+            File(appContext.cacheDir, "trimtest-changed.mp3").delete()
+        }
+    }
+
+    /** "Undo trim" puts back exactly the file there was, and the song's silence is measured again. */
+    @Test
+    fun undoTrimPutsTheOriginalBack() = runTest {
+        val db = Room.inMemoryDatabaseBuilder(appContext, SongDatabase::class.java).build()
+        val repo = testRepository(appContext, db)
+        try {
+            val (song, f) = measuredSong(db, repo, "undo.mp3")
+            val before = md5(f)
+            val done = repo.trimSilence(song)
+            assertEquals(SongRepository.TrimOutcome.TRIMMED, done.trim)
+            val trimmed = db.songs().get(song.id)!!
+            assertTrue(trimmed.originalPath != null && File(trimmed.originalPath!!).exists())
+            assertTrue(md5(f) != before)
+            assertEquals(1, repo.originalsKept().first)
+
+            val restored = repo.undoTrim(trimmed)
+            assertEquals(before, md5(f))
+            assertNull(restored.originalPath)
+            assertFalse(File(trimmed.originalPath!!).exists())
+            assertTrue("lead ${restored.silenceStartMs}", restored.silenceStartMs!! >= 1900)
+            assertTrue(restored.hasSilenceToTrim)
+            assertEquals(0, repo.originalsKept().first)
+        } finally {
+            db.close()
+            File(appContext.cacheDir, "trimtest-undo.mp3").delete()
+        }
+    }
+
+    /** Kept originals go after a week (and files no song points to go too). */
+    @Test
+    fun oldOriginalsAreDropped() = runTest {
+        val db = Room.inMemoryDatabaseBuilder(appContext, SongDatabase::class.java).build()
+        val repo = testRepository(appContext, db)
+        try {
+            val (song, _) = measuredSong(db, repo, "prune.mp3")
+            repo.trimSilence(song)
+            val trimmed = db.songs().get(song.id)!!
+            val kept = File(trimmed.originalPath!!)
+            val stray = File(kept.parentFile, "stray.mp3").apply { writeText("x") }
+            repo.pruneOriginals(now = trimmed.originalSavedAt!! + 60_000)
+            assertTrue(kept.exists())
+            assertFalse(stray.exists())
+            repo.pruneOriginals(now = trimmed.originalSavedAt!! + SongRepository.KEEP_ORIGINALS_MS + 1)
+            assertFalse(kept.exists())
+            assertNull(db.songs().get(song.id)!!.originalPath)
+        } finally {
+            db.close()
+            File(appContext.cacheDir, "trimtest-prune.mp3").delete()
         }
     }
 

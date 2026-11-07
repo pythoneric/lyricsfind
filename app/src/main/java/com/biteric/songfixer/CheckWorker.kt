@@ -24,6 +24,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val app = applicationContext as SongFixerApp
         val tree = app.settings.current.folderUri ?: return Result.failure()
         setForeground(foregroundInfo(0, 0))
+        runCatching { app.repository.pruneOriginals() }
         try {
             app.repository.sync(tree)
         } catch (e: Exception) {

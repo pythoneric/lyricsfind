@@ -231,6 +231,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Cuts the silence off every song that has some. */
     fun trimAll() = BatchWorker.start(getApplication(), BatchKind.TRIM)
 
+    /** "Undo trim" in the sheet: the kept original goes back over the song. */
+    fun undoTrim(song: Song) = work("Couldn't undo the trim") {
+        val restored = repo.undoTrim(song)
+        messageSongId = restored.id
+        _message.value = "${song.fileName}: the untrimmed original is back"
+        refreshOriginals()
+    }
+
+    private val _originals = MutableStateFlow(0 to 0L)
+    /** Kept originals of trimmed songs: how many, and their size in bytes (for Settings). */
+    val originals: StateFlow<Pair<Int, Long>> = _originals.asStateFlow()
+
+    fun refreshOriginals() {
+        viewModelScope.launch { _originals.value = runCatching { repo.originalsKept() }.getOrDefault(0 to 0L) }
+    }
+
+    fun deleteOriginals() = work("Couldn't delete the kept originals") {
+        repo.pruneOriginals(all = true)
+        _originals.value = repo.originalsKept()
+        _message.value = "Kept originals deleted"
+    }
+
+    init {
+        // Originals past their week (or past 1 GB in all) go when the app opens.
+        viewModelScope.launch {
+            runCatching { repo.pruneOriginals() }
+            refreshOriginals()
+        }
+    }
+
     /** "Trim silence only" in the sheet. */
     fun trimSilence(song: Song) = work("Couldn't trim it") {
         val done = repo.trimSilence(song)

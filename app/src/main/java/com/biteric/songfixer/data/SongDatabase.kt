@@ -57,7 +57,7 @@ interface SongDao {
     suspend fun markFailedUnchecked()
 
     /** Not measured yet (loudness or silence), or its volume tags not read yet (read again after the file changed). */
-    @Query("SELECT * FROM songs WHERE loudnessChecked = 0 OR silenceChecked = 0 OR gainVerdict IS NULL ORDER BY folder, fileName COLLATE NOCASE LIMIT 1")
+    @Query("SELECT * FROM songs WHERE loudnessChecked = 0 OR silenceChecked = 0 OR gainVerdict IS NULL OR $NEEDS_MARK ORDER BY folder, fileName COLLATE NOCASE LIMIT 1")
     suspend fun nextUnmeasured(): Song?
 
     /** Checked before years were kept: their year is read from the file once. */
@@ -72,18 +72,31 @@ interface SongDao {
         "UPDATE songs SET loudnessLufs = :lufs, trackGainDb = :gain, truePeak = :peak, loudnessChecked = :loudnessChecked, " +
             "silenceStartMs = :silenceStart, silenceEndMs = :silenceEnd, silenceChecked = :silenceChecked, " +
             "existingTrackGain = :tagGain, existingTrackPeak = :tagPeak, existingReference = :tagReference, " +
-            "gainVerdict = :verdict, replayGainInFile = :gainInFile WHERE id = :id AND uri = :uri",
+            "gainVerdict = :verdict, replayGainInFile = :gainInFile, silenceMark = :silenceMark WHERE id = :id AND uri = :uri",
     )
     suspend fun saveMeasurement(
         id: Long, uri: String,
         lufs: Double?, gain: Double?, peak: Double?, loudnessChecked: Boolean,
         silenceStart: Long?, silenceEnd: Long?, silenceChecked: Boolean,
-        tagGain: String?, tagPeak: String?, tagReference: String?, verdict: String?, gainInFile: Boolean?,
+        tagGain: String?, tagPeak: String?, tagReference: String?, verdict: String?, gainInFile: Boolean?, silenceMark: String?,
     ): Int
 
-    @Query("SELECT COUNT(*) FROM songs WHERE loudnessChecked = 0 OR silenceChecked = 0 OR gainVerdict IS NULL")
+    @Query("SELECT * FROM songs WHERE originalPath IS NOT NULL")
+    suspend fun withOriginals(): List<Song>
+
+    /** Only these columns: a check or a fix may be saving the rest of the row. */
+    @Query("UPDATE songs SET originalPath = NULL, originalSavedAt = NULL WHERE id = :id")
+    suspend fun clearOriginal(id: Long)
+
+    @Query("SELECT COUNT(*) FROM songs WHERE loudnessChecked = 0 OR silenceChecked = 0 OR gainVerdict IS NULL OR $NEEDS_MARK")
     suspend fun unmeasuredCount(): Int
 }
+
+/**
+ * Silence to trim, but no exact mark of where the sound is (measured by an older version): the
+ * check measures it again, so a trim doesn't have to.
+ */
+private const val NEEDS_MARK = "(silenceMark IS NULL AND trimError IS NULL AND (silenceStartMs >= 500 OR silenceEndMs >= 500) AND (lower(fileName) LIKE '%.mp3' OR lower(fileName) LIKE '%.flac' OR lower(fileName) LIKE '%.wav'))"
 
 class Converters {
     private val json = Json { ignoreUnknownKeys = true }
@@ -95,7 +108,7 @@ class Converters {
     fun toCandidates(s: String): List<Candidate> = runCatching { json.decodeFromString<List<Candidate>>(s) }.getOrDefault(emptyList())
 }
 
-@Database(entities = [Song::class], version = 8)
+@Database(entities = [Song::class], version = 9)
 @TypeConverters(Converters::class)
 abstract class SongDatabase : RoomDatabase() {
     abstract fun songs(): SongDao
@@ -154,8 +167,17 @@ abstract class SongDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) = db.execSQL("ALTER TABLE songs ADD COLUMN trimError TEXT DEFAULT NULL")
         }
 
+        /** v9: exact silence positions for fast trims, and kept originals for "Undo trim". */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE songs ADD COLUMN silenceMark TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN originalPath TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE songs ADD COLUMN originalSavedAt INTEGER DEFAULT NULL")
+            }
+        }
+
         /** Every migration, oldest first (also for the migration test). */
-        internal val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+        internal val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
 
         fun create(context: Context) = Room.databaseBuilder(context, SongDatabase::class.java, "songfixer.db")
             .addMigrations(*MIGRATIONS)

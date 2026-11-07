@@ -39,6 +39,9 @@ import com.biteric.songfixer.data.SettingsState
 @Composable
 fun SettingsScreen(
     settings: SettingsState,
+    /** Kept originals of trimmed songs: how many, and their size in bytes. */
+    originals: Pair<Int, Long> = 0 to 0L,
+    onDeleteOriginals: () -> Unit = {},
     onBack: () -> Unit,
     onChange: ((SettingsState) -> SettingsState) -> Unit,
     onPickFolder: () -> Unit,
@@ -87,6 +90,18 @@ fun SettingsScreen(
             SwitchRow("Add the album cover (from the Cover Art Archive) to songs without one", settings.addCover) { v -> onChange { it.copy(addCover = v) } }
             SwitchRow("Normalize volume: measure loudness and add ReplayGain tags (−18 LUFS)", settings.normalize) { v -> onChange { it.copy(normalize = v) } }
             SwitchRow("Trim silence: cut the silence at the start and end of songs, for gapless mixing", settings.trimSilence) { v -> onChange { it.copy(trimSilence = v) } }
+            SwitchRow("Keep the original of each trimmed song for a week, to undo the trim", settings.keepOriginals) { v -> onChange { it.copy(keepOriginals = v) } }
+            if (originals.first > 0) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${originals.first} kept (" + String.format(java.util.Locale.US, "%.0f MB", originals.second / 1_048_576.0) + "), up to 1 GB",
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = onDeleteOriginals) { Text("Delete them") }
+                }
+            }
             Text(
                 "Lyrics, covers and volume tags already in a file are never replaced (Re-measure replaces volume tags). " +
                     "The audio is only changed by Trim silence, which cuts silence of half a second or more off the ends " +

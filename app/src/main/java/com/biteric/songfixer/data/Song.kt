@@ -99,6 +99,11 @@ data class Song(
      * batches (they'd fail on it again) until it's tried again from its sheet or the file changes.
      */
     val trimError: String? = null,
+    /** Exactly where its sound starts and ends, and the file it was measured on ([com.biteric.songfixer.loudness.SilenceMark]). */
+    val silenceMark: String? = null,
+    /** The untrimmed file kept for "Undo trim" (in the app's own storage), and when it was kept. */
+    val originalPath: String? = null,
+    val originalSavedAt: Long? = null,
 ) {
     /** Enough silence at an end to be worth cutting, in a format that can be cut. */
     val silenceWorthTrimming: Boolean

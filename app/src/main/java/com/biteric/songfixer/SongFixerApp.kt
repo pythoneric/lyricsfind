@@ -48,6 +48,7 @@ class SongFixerApp : Application() {
             CoverFinder(musicBrainz, coverArt),
             coverArt,
             LoudnessAnalyzer(this),
+            java.io.File(filesDir, "originals"),
         )
     }
 }

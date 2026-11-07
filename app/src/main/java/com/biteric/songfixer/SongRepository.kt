@@ -11,6 +11,10 @@ import com.biteric.songfixer.files.MusicFolder
 import com.biteric.songfixer.files.NewNames
 import com.biteric.songfixer.files.SongWriter
 import com.biteric.songfixer.files.SilenceTrimmer
+import com.biteric.songfixer.loudness.SilenceMark
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import com.biteric.songfixer.fingerprint.AudioFingerprinter
 import com.biteric.songfixer.match.Identifier
 import com.biteric.songfixer.match.LyricsFinder
@@ -45,6 +49,8 @@ class SongRepository(
     private val coverFinder: CoverFinder,
     private val coverArt: CoverArtApi,
     private val loudness: LoudnessAnalyzer,
+    /** Where untrimmed originals are kept for "Undo trim"; null = never kept. */
+    private val originalsDir: File? = null,
 ) {
     val songs = dao.observeAll()
     val counts = dao.observeCounts()
@@ -213,14 +219,22 @@ class SongRepository(
     ): Applied {
         var uri = Uri.parse(song.uri)
         var fileName = song.fileName
+        // The silence measured on exactly this file (same size and time), if it was: a trim uses it
+        // instead of listening to the whole song again.
+        val mark = SilenceMark.decode(song.silenceMark)?.takeIf { it.matches(writer.stamp(uri)) }
 
         // Silence first: it rewrites the audio, the tags go into the trimmed file after.
         var trimOutcome = TrimOutcome.NOT_ASKED
         var trimmed: SongWriter.Trimmed? = null
         var trimError: String? = null
+        var keptOriginal: File? = null
         if (trimSilence) {
             trimOutcome = try {
-                val t = writer.trimSilence(uri, song.extension) { loudness.silence(it) }
+                // The untrimmed file is kept for "Undo trim" (the first one only, when trimmed twice).
+                val keepAs = originalsDir?.takeIf { settings.current.keepOriginals && song.originalPath == null }
+                    ?.let { File(it, "${song.id}-${System.currentTimeMillis()}.${song.extension}") }
+                val t = writer.trimSilence(uri, song.extension, keepAs) { copy -> mark?.silence ?: loudness.silence(copy) }
+                if (t.originalKept) keptOriginal = keepAs
                 trimmed = t
                 when {
                     t.startMs + t.endMs > 0 -> TrimOutcome.TRIMMED
@@ -286,6 +300,9 @@ class SongRepository(
             volumeOutcome = LyricsOutcome.NOT_ONLINE
         }
         var embedded: SongWriter.EmbedResult? = null
+        // The file now, before its tags are written: a silence mark valid for it stays valid after
+        // (tags don't change the audio) and moves to the written file's stamp.
+        val stampBeforeTags = writer.stamp(uri)
         if (writeTags || ((lyrics != null || cover != null || gain != null) && canEmbed)) {
             val written = writer.writeTags(
                 uri, song.extension, if (writeTags) names else NewNames("", "", "", ""), lyrics.takeIf { canEmbed }, cover = cover,
@@ -360,8 +377,70 @@ class SongRepository(
                 else -> s
             }
         }
-        dao.update(fixed)
-        return Applied(fixed, outcome, coverOutcome, volumeOutcome, trimOutcome, trimmed, trimError)
+        val stampAfter = writer.stamp(uri)
+        val saved = fixed.copy(
+            silenceMark = when {
+                // The audio changed: where its sound is now is measured again when it's needed.
+                trimOutcome == TrimOutcome.TRIMMED -> null
+                else -> SilenceMark.decode(fixed.silenceMark)?.takeIf { it.matches(stampBeforeTags) && stampAfter != null }
+                    ?.copy(stamp = stampAfter!!)?.encode() ?: fixed.silenceMark
+            },
+            originalPath = keptOriginal?.absolutePath ?: fixed.originalPath,
+            originalSavedAt = if (keptOriginal != null) System.currentTimeMillis() else fixed.originalSavedAt,
+        )
+        dao.update(saved)
+        return Applied(saved, outcome, coverOutcome, volumeOutcome, trimOutcome, trimmed, trimError)
+    }
+
+    /**
+     * "Undo trim": puts the kept original back over the song (the file as it was before the trim,
+     * its tags then included), and measures its silence again. Returns the song as saved.
+     */
+    suspend fun undoTrim(song: Song): Song {
+        val original = File(song.originalPath ?: throw SongWriter.Failed("No original is kept for this song"))
+        val uri = Uri.parse(song.uri)
+        writer.restore(uri, original)
+        original.delete()
+        runCatching { writer.notifyMediaStore(uri) }
+        val tags = runCatching { folder.readTags(uri) }.getOrNull()
+        val restored = measureSilence(
+            song.copy(
+                originalPath = null, originalSavedAt = null, trimError = null,
+                // Its tags are read again (they're the original's now).
+                gainVerdict = null, durationMs = tags?.durationMs ?: song.durationMs,
+            ),
+        )
+        dao.update(restored)
+        return restored
+    }
+
+    /** How many originals are kept, and their size in bytes. */
+    suspend fun originalsKept(): Pair<Int, Long> = withContext(Dispatchers.IO) {
+        val kept = dao.withOriginals().mapNotNull { s -> s.originalPath?.let(::File)?.takeIf { it.exists() } }
+        kept.size to kept.sumOf { it.length() }
+    }
+
+    /**
+     * Drops kept originals older than [KEEP_ORIGINALS_MS], then the oldest past [MAX_ORIGINALS_BYTES]
+     * in all, and files no song points to; with [all], every one.
+     */
+    suspend fun pruneOriginals(all: Boolean = false, now: Long = System.currentTimeMillis()) = withContext(Dispatchers.IO) {
+        val dir = originalsDir ?: return@withContext
+        val kept = dao.withOriginals()
+        val survivors = mutableSetOf<String>()
+        var total = 0L
+        for (s in kept.sortedByDescending { it.originalSavedAt ?: 0 }) {
+            val f = File(s.originalPath!!)
+            val fresh = now - (s.originalSavedAt ?: 0) < KEEP_ORIGINALS_MS
+            if (!all && fresh && f.exists() && total + f.length() <= MAX_ORIGINALS_BYTES) {
+                total += f.length()
+                survivors += f.absolutePath
+            } else {
+                f.delete()
+                dao.clearOriginal(s.id)
+            }
+        }
+        dir.listFiles()?.filter { it.absolutePath !in survivors }?.forEach { it.delete() }
     }
 
     /**
@@ -382,7 +461,7 @@ class SongRepository(
      */
     suspend fun measure(id: Long) {
         val song = dao.get(id) ?: return
-        if (!song.loudnessChecked || !song.silenceChecked || song.gainVerdict == null) measureSong(song)
+        if (!song.loudnessChecked || !song.silenceChecked || song.gainVerdict == null || needsMark(song)) measureSong(song)
     }
 
     /** Measures what the song is missing and reads its volume tags; saves only those columns. */
@@ -390,30 +469,32 @@ class SongRepository(
         val measured = withVolumeTags(
             when {
                 !song.loudnessChecked -> measure(song)
-                !song.silenceChecked -> measureSilence(song)
+                !song.silenceChecked || needsMark(song) -> measureSilence(song)
                 else -> song
             },
         )
         with(measured) {
             dao.saveMeasurement(
                 id, uri, loudnessLufs, trackGainDb, truePeak, loudnessChecked, silenceStartMs, silenceEndMs, silenceChecked,
-                existingTrackGain, existingTrackPeak, existingReference, gainVerdict?.name, replayGainInFile,
+                existingTrackGain, existingTrackPeak, existingReference, gainVerdict?.name, replayGainInFile, silenceMark,
             )
         }
     }
 
     /** The song with the silence at its ends filled in (not saved). */
     private suspend fun measureSilence(song: Song): Song = try {
+        val stamp = writer.stamp(Uri.parse(song.uri))
         val s = loudness.silence(Uri.parse(song.uri))
         song.copy(
             silenceStartMs = if (s.silent) null else s.leadMs,
             silenceEndMs = if (s.silent) null else s.tailMs,
             silenceChecked = true,
+            silenceMark = if (s.silent) null else stamp?.let { SilenceMark(s, it).encode() } ?: "",
         )
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        song.copy(silenceStartMs = null, silenceEndMs = null, silenceChecked = true)
+        song.copy(silenceStartMs = null, silenceEndMs = null, silenceChecked = true, silenceMark = null)
     }
 
     /** The song with the volume tags in its file and their verdict against its measurement (not saved). */
@@ -438,6 +519,7 @@ class SongRepository(
 
     /** The song with its loudness, true peak, track gain and silence at the ends filled in (not saved). One decode for all. */
     private suspend fun measure(song: Song): Song = try {
+        val stamp = writer.stamp(Uri.parse(song.uri))
         val a = loudness.analyze(Uri.parse(song.uri))
         val l = a.loudness
         val quiet = a.silence.silent
@@ -447,6 +529,7 @@ class SongRepository(
             silenceStartMs = if (quiet) null else a.silence.leadMs,
             silenceEndMs = if (quiet) null else a.silence.tailMs,
             silenceChecked = true,
+            silenceMark = if (quiet) null else stamp?.let { SilenceMark(a.silence, it).encode() } ?: "",
         )
     } catch (e: CancellationException) {
         throw e
@@ -597,6 +680,13 @@ class SongRepository(
             settings.trimSilence && song.hasSilenceToTrim -> true
             else -> settings.addLyrics && needsLyrics(song)
         }
+
+        /** Same as the database's NEEDS_MARK: silence to trim, no exact mark yet. */
+        fun needsMark(song: Song): Boolean = song.silenceMark == null && song.trimError == null && song.silenceWorthTrimming
+
+        /** Kept originals go after a week, and the oldest go past 1 GB in all. */
+        const val KEEP_ORIGINALS_MS = 7L * 24 * 60 * 60 * 1000
+        const val MAX_ORIGINALS_BYTES = 1L shl 30
 
         /** Songs measured with enough silence at an end to cut, in a format that can be cut. */
         fun needTrimming(songs: List<Song>): List<Song> = songs.filter { it.hasSilenceToTrim }

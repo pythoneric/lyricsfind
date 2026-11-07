@@ -114,8 +114,12 @@ fun App(vm: MainViewModel = viewModel()) {
 
     if (showSettings) {
         BackHandler { showSettings = false }
+        val originals by vm.originals.collectAsStateWithLifecycle()
+        LaunchedEffect(Unit) { vm.refreshOriginals() }
         SettingsScreen(
             settings = settings,
+            originals = originals,
+            onDeleteOriginals = vm::deleteOriginals,
             onBack = { showSettings = false },
             onChange = vm::updateSettings,
             onPickFolder = { pickFolder.launch(null) },
@@ -178,6 +182,7 @@ fun App(vm: MainViewModel = viewModel()) {
             onApply = { names, tags, rename, lyrics, cover, rgId, normalize, trim -> vm.apply(open, names, tags, rename, lyrics, cover, rgId, normalize, trim); openSongId = null },
             onNormalize = { vm.normalize(open); openSongId = null },
             onTrimSilence = { vm.trimSilence(open); openSongId = null },
+            onUndoTrim = { vm.undoTrim(open); openSongId = null },
             onRemeasure = { vm.remeasure(open); openSongId = null },
             onAddLyrics = { vm.addLyrics(open); openSongId = null },
             onAddCover = { vm.addCover(open); openSongId = null },
