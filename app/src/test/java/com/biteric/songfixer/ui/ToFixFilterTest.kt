@@ -67,6 +67,17 @@ class ToFixFilterTest {
         assertTrue(toFix(clean(name = "a.wav").copy(gainVerdict = GainVerdict.NONE, silenceStartMs = 2000)))
     }
 
+    /** A trim that failed isn't tried by every batch again; the silence stays known, and the song is back once it's tried again. */
+    @Test
+    fun aFailedTrimLeavesToFixButKeepsItsSilence() {
+        val failed = clean().copy(silenceStartMs = 2000, trimError = "The MP3's frames couldn't be followed to its end")
+        assertFalse(toFix(failed))
+        assertFalse(failed.hasSilenceToTrim)
+        assertTrue(failed.silenceWorthTrimming)
+        assertEquals(null, silenceChip(failed))
+        assertTrue(toFix(failed.copy(trimError = null)))
+    }
+
     @Test
     fun songsNotCheckedYetWait() {
         assertFalse(toFix(clean(SongStatus.NEW).copy(silenceStartMs = 2000, gainVerdict = GainVerdict.NONE)))

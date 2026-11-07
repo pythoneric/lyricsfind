@@ -105,7 +105,31 @@ class MigrationTest {
         }
     }
 
+    /** v8 remembers why a trim failed: rows from v7 haven't failed, and keep their silence to trim. */
+    @Test
+    fun v7ToV8KeepsTheSilenceToTrim() = runTest {
+        helper.createDatabase(name, 7).use { db ->
+            db.execSQL(
+                "INSERT INTO songs (uri, fileName, folder, size, modified, status, candidates, loudnessChecked, yearRead, silenceStartMs, silenceEndMs, silenceChecked) " +
+                    "VALUES ('content://x/d.mp3', 'd.mp3', '', 10, 20, 'OK', '[]', 1, 1, 2000, 3000, 1)",
+            )
+        }
+        helper.runMigrationsAndValidate(name, 8, true, *SongDatabase.MIGRATIONS).close()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = Room.databaseBuilder(context, SongDatabase::class.java, name).addMigrations(*SongDatabase.MIGRATIONS).build()
+        try {
+            val song = db.songs().all().single()
+            assertNull(song.trimError)
+            assertEquals(2000L, song.silenceStartMs)
+            assertTrue(song.hasSilenceToTrim)
+        } finally {
+            db.close()
+            context.deleteDatabase(name)
+            java.io.File(context.getDatabasePath(name).path + ".lck").delete()
+        }
+    }
+
     private companion object {
-        const val LATEST = 7
+        const val LATEST = 8
     }
 }

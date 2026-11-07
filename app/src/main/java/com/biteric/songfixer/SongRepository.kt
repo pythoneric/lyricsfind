@@ -10,6 +10,7 @@ import com.biteric.songfixer.data.SongStatus
 import com.biteric.songfixer.files.MusicFolder
 import com.biteric.songfixer.files.NewNames
 import com.biteric.songfixer.files.SongWriter
+import com.biteric.songfixer.files.SilenceTrimmer
 import com.biteric.songfixer.fingerprint.AudioFingerprinter
 import com.biteric.songfixer.match.Identifier
 import com.biteric.songfixer.match.LyricsFinder
@@ -63,7 +64,8 @@ class SongRepository(
                 // Changed outside the app (unless it's our own fix, which keeps FIXED).
                 val status = if (old.status == SongStatus.FIXED || old.status == SongStatus.KEPT) old.status else SongStatus.NEW
                 // Its volume tags are read again (the audio isn't measured again).
-                dao.update(old.copy(fileName = f.name, folder = f.folder, size = f.size, modified = f.modified, status = status, gainVerdict = null))
+                // A trim that failed on the old file is worth trying on the new one.
+                dao.update(old.copy(fileName = f.name, folder = f.folder, size = f.size, modified = f.modified, status = status, gainVerdict = null, trimError = null))
             }
         }
         if (added.isNotEmpty()) dao.insert(added)
@@ -216,20 +218,23 @@ class SongRepository(
         var trimOutcome = TrimOutcome.NOT_ASKED
         var trimmed: SongWriter.Trimmed? = null
         var trimError: String? = null
-        var untrimmable = false
         if (trimSilence) {
             trimOutcome = try {
                 val t = writer.trimSilence(uri, song.extension) { loudness.silence(it) }
                 trimmed = t
-                if (t.startMs + t.endMs > 0) TrimOutcome.TRIMMED else TrimOutcome.NOTHING_TO_CUT
+                when {
+                    t.startMs + t.endMs > 0 -> TrimOutcome.TRIMMED
+                    // Silence worth cutting, but none of it could be (it'd be tried in every batch again).
+                    SilenceTrimmer.worthIt(t.leadLeftMs, t.tailLeftMs) -> {
+                        trimError = "its silence couldn't be cut"
+                        TrimOutcome.FAILED
+                    }
+                    else -> TrimOutcome.NOTHING_TO_CUT
+                }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: SongWriter.Untrimmable) {
-                trimError = e.message
-                untrimmable = true
-                TrimOutcome.FAILED
             } catch (e: Exception) {
-                trimError = e.message
+                trimError = e.message ?: e.javaClass.simpleName
                 TrimOutcome.FAILED
             } catch (e: OutOfMemoryError) {
                 // Never again expected (the trim streams), but one song must not close the app mid-batch.
@@ -331,10 +336,12 @@ class SongRepository(
             replayGainInFile = if (volumeOutcome == LyricsOutcome.ADDED || volumeOutcome == LyricsOutcome.ALREADY_THERE) true else measured.replayGainInFile,
             note = null,
         ).let { s ->
-            // Can't be trimmed at all: off the "to trim" list (or every batch tries it again), saying why.
-            if (untrimmable) return@let s.copy(silenceStartMs = null, silenceEndMs = null, note = "The silence can't be cut from this file: $trimError")
+            // A failed trim is remembered with its reason: out of the batches (they'd fail on it again),
+            // its silence still shown as measured, tried again from its sheet. Any other outcome clears it.
+            if (trimOutcome == TrimOutcome.FAILED) return@let s.copy(trimError = trimError ?: "unknown error")
             val t = trimmed ?: return@let s
             s.copy(
+                trimError = null,
                 silenceStartMs = t.leadLeftMs,
                 silenceEndMs = t.tailLeftMs,
                 silenceChecked = true,

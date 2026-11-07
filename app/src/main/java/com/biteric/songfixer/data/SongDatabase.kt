@@ -95,7 +95,7 @@ class Converters {
     fun toCandidates(s: String): List<Candidate> = runCatching { json.decodeFromString<List<Candidate>>(s) }.getOrDefault(emptyList())
 }
 
-@Database(entities = [Song::class], version = 7)
+@Database(entities = [Song::class], version = 8)
 @TypeConverters(Converters::class)
 abstract class SongDatabase : RoomDatabase() {
     abstract fun songs(): SongDao
@@ -149,8 +149,13 @@ abstract class SongDatabase : RoomDatabase() {
             }
         }
 
+        /** v8: why the last silence trim failed. */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) = db.execSQL("ALTER TABLE songs ADD COLUMN trimError TEXT DEFAULT NULL")
+        }
+
         /** Every migration, oldest first (also for the migration test). */
-        internal val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+        internal val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
 
         fun create(context: Context) = Room.databaseBuilder(context, SongDatabase::class.java, "songfixer.db")
             .addMigrations(*MIGRATIONS)

@@ -164,8 +164,8 @@ class SilenceTrimmerTest {
     // ------------------------------------------------------------ MP3
 
     /** 128 kbps MPEG-1 Layer III frames of [frames] count, empty, after an ID3v2 tag and a LAME Info frame. */
-    /** [junkAfter]: 2 stray bytes after that audio frame; [ending]: what ends the file in place of an ID3v1 tag. */
-    private fun mp3(frames: Int, junkAfter: Int = -1, ending: ByteArray = "TAG".toByteArray() + ByteArray(125)): ByteArray {
+    /** [junkAfter]: [junk] stray bytes after that audio frame; [ending]: what ends the file in place of an ID3v1 tag. */
+    private fun mp3(frames: Int, junkAfter: Int = -1, ending: ByteArray = "TAG".toByteArray() + ByteArray(125), junk: ByteArray = byteArrayOf(0xDA.toByte(), 0x58)): ByteArray {
         val out = ByteArrayOutputStream()
         out.write("ID3".toByteArray() + byteArrayOf(3, 0, 0, 0, 0, 0, 10) + ByteArray(10))
         val info = ByteArray(417)
@@ -184,7 +184,7 @@ class SilenceTrimmerTest {
             f[0] = 0xFF.toByte(); f[1] = 0xFB.toByte(); f[2] = 0x90.toByte(); f[3] = 0x44
             f[100] = i.toByte() // tells frames apart
             out.write(f)
-            if (i == junkAfter) out.write(byteArrayOf(0xDA.toByte(), 0x58))
+            if (i == junkAfter) out.write(junk)
         }
         out.write(ending)
         return out.toByteArray()
@@ -245,5 +245,56 @@ class SilenceTrimmerTest {
         val cut = SilenceTrimmer.cut(b, "mp3", Silence(rate, 400 * spf, 100 * spf, 250 * spf))!!
         assertArrayEquals(padding, cut.bytes.copyOfRange(cut.bytes.size - padding.size, cut.bytes.size))
         assertTrue(cut.startMs > 2000 && cut.endMs > 3500)
+    }
+
+    /** Bytes in a tag at the end that look like an MP3 frame aren't taken for audio, so the tag comes through whole. */
+    @Test
+    fun aFrameLookAlikeInTheEndingTagIsNotAudio() {
+        val spf = 1152L
+        // An APEv2 tag holding a frame header whose length would end exactly at the end of the file.
+        val tag = ByteArray(2000).also {
+            "APETAGEX".toByteArray().copyInto(it, 0)
+            val at = it.size - 417
+            it[at] = 0xFF.toByte(); it[at + 1] = 0xFB.toByte(); it[at + 2] = 0x90.toByte(); it[at + 3] = 0x44
+        }
+        val cut = SilenceTrimmer.cut(mp3(400, ending = tag), "mp3", Silence(rate, 400 * spf, 100 * spf, 250 * spf))!!
+        assertArrayEquals(tag, cut.bytes.copyOfRange(cut.bytes.size - tag.size, cut.bytes.size))
+    }
+
+    /** A cover over 1 MB in the tags at the start, then stray bytes before the first frame: still found. */
+    @Test
+    fun theFirstFrameIsFoundAfterABigCoverAndStrayBytes() {
+        val spf = 1152L
+        val plain = mp3(400)
+        // A 1.5 MB ID3v2 tag in place of the small one, and 3 stray bytes after it.
+        val size = 1_500_000
+        val id3 = "ID3".toByteArray() + byteArrayOf(3, 0, 0) +
+            byteArrayOf(((size shr 21) and 0x7F).toByte(), ((size shr 14) and 0x7F).toByte(), ((size shr 7) and 0x7F).toByte(), (size and 0x7F).toByte()) +
+            ByteArray(size) + byteArrayOf(1, 2, 3)
+        val big = id3 + plain.copyOfRange(20, plain.size)
+        val cut = SilenceTrimmer.cut(big, "mp3", Silence(rate, 400 * spf, 100 * spf, 250 * spf))!!
+        assertEquals(SilenceTrimmer.cut(plain, "mp3", Silence(rate, 400 * spf, 100 * spf, 250 * spf))!!.startMs, cut.startMs)
+    }
+
+    /** Frames the reader loses track of (a mix whose format changes partway) aren't taken for the ending and cut around. */
+    @Test(expected = SilenceTrimmer.Unsupported::class)
+    fun framesLostTrackOfAreNotTakenForTheEnding() {
+        val spf = 1152L
+        // 300 frames at 44.1 kHz, then 400 KB of 48 kHz frames.
+        val other = ByteArray(417).also { it[0] = 0xFF.toByte(); it[1] = 0xFB.toByte(); it[2] = 0x94.toByte(); it[3] = 0x44 }
+        val len = SilenceTrimmer.Mp3.header(other, 0)!!.length
+        val tail = ByteArray(len * 1000).also { for (i in 0 until 1000) other.copyInto(it, i * len, 0, len) }
+        SilenceTrimmer.cut(mp3(300, ending = tail), "mp3", Silence(rate, 300 * spf, 100 * spf, 250 * spf))
+    }
+
+    /** A whole ID3v1 tag left in the middle of the audio ("Me Myself and I.mp3"): the audio after it is still audio, and its end silence is cut. */
+    @Test
+    fun aTagInTheMiddleOfTheAudioIsNotItsEnd() {
+        val spf = 1152L
+        val strayTag = "TAGMe Myself".toByteArray() + ByteArray(163)
+        val silence = Silence(rate, 400 * spf, 100 * spf, 250 * spf)
+        val cut = SilenceTrimmer.cut(mp3(400, junkAfter = 300, junk = strayTag), "mp3", silence)!!
+        assertEquals(SilenceTrimmer.cut(mp3(400), "mp3", silence)!!.endMs, cut.endMs)
+        assertTrue(cut.endMs > 3500)
     }
 }

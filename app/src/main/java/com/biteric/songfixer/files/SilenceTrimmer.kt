@@ -49,9 +49,11 @@ object SilenceTrimmer {
 
     /** A file read through a window of [WINDOW] bytes that follows the reads (forwards, and a little back). */
     internal class FileSrc(file: File) : Src() {
+        // Checked before the file is opened, so a refusal leaves nothing open.
+        override val size: Int = file.length().also { if (it > Int.MAX_VALUE) throw Unsupported("The file is too big to trim") }.toInt()
         private val raf = RandomAccessFile(file, "r")
-        override val size: Int = raf.length().also { if (it > Int.MAX_VALUE) throw Unsupported("The file is too big to trim") }.toInt()
         private val window = ByteArray(WINDOW)
+        private val copyBuffer = ByteArray(COPY)
         private var windowStart = 0
         private var windowLength = 0
 
@@ -67,7 +69,12 @@ object SilenceTrimmer {
         }
 
         override fun writeTo(out: OutputStream, from: Int, length: Int) {
-            val buf = ByteArray(COPY)
+            // Small pieces (FLAC frame headers and bodies) are usually in the window already.
+            if (from >= windowStart && from + length <= windowStart + windowLength) {
+                out.write(window, from - windowStart, length)
+                return
+            }
+            val buf = copyBuffer
             raf.seek(from.toLong())
             var left = length
             while (left > 0) {
@@ -181,40 +188,52 @@ object SilenceTrimmer {
 
         private fun sameStream(a: Header, b: Header) = a.version == b.version && a.sampleRate == b.sampleRate
 
+        /** Frames in a row needed before bytes count as audio: a lone look-alike in tag data or a cover doesn't. */
+        private const val CONFIRM = 3
+
         /**
-         * The next frame of [first]'s stream from [from] on: one whose next frame follows right after
-         * it (or that ends the file); -1 when there are no more frames.
+         * The next real frame from [from] on, of [stream]'s stream (any stream when null): one followed
+         * by [CONFIRM] − 1 more frames of it, each right after the other. Looks no further than [limit]
+         * bytes; -1 when there's none.
          */
-        private fun resync(b: Src, from: Int, first: Header): Int {
+        private fun nextFrame(b: Src, from: Int, stream: Header?, limit: Int = Int.MAX_VALUE): Int {
             var q = from
-            while (q + 4 <= b.size) {
+            val stop = if (limit == Int.MAX_VALUE) b.size else minOf(b.size, from + limit)
+            while (q + 4 <= stop) {
                 if (u8(b, q) == 0xFF) {
                     val h = header(b, q)
-                    if (h != null && sameStream(h, first) && q + h.length <= b.size) {
-                        val after = q + h.length
-                        val next = header(b, after)
-                        if (after == b.size || (next != null && sameStream(next, first))) return q
-                    }
+                    if (h != null && (stream == null || sameStream(h, stream)) && followed(b, q, h)) return q
                 }
                 q++
             }
             return -1
         }
 
-        fun cut(b: Src, startWanted: Long, endWanted: Long, silence: Silence, out: OutputStream): Cut? {
-            var p = id3v2Length(b)
-            // The first frame: one whose next frame follows right after it.
-            var found: Header? = null
-            while (p + 4 <= b.size) {
-                val h = header(b, p)
-                if (h != null) {
-                    val next = header(b, p + h.length)
-                    if (next != null && sameStream(h, next)) { found = h; break }
-                }
-                p++
-                if (p > 1 shl 20) break
+        private fun followed(b: Src, at: Int, h: Header): Boolean {
+            var p = at
+            var cur = h
+            repeat(CONFIRM - 1) {
+                p += cur.length
+                cur = header(b, p)?.takeIf { sameStream(it, h) && p + it.length <= b.size } ?: return false
             }
-            val first = found ?: throw Unsupported("No MP3 frames found")
+            return true
+        }
+
+        /** Tags that end MP3 files (ID3v1, APEv2, Lyrics3, a trailing ID3v2). */
+        private fun tagAt(b: Src, p: Int) =
+            ascii(b, p, "TAG") || ascii(b, p, "APETAGEX") || ascii(b, p, "LYRICS") || ascii(b, p, "ID3")
+
+        /** An APEv2 footer at the very end (or before an ID3v1 tag): APE tags written without a header. */
+        private fun apeFooterAtEnd(b: Src) = ascii(b, b.size - 32, "APETAGEX") || ascii(b, b.size - 160, "APETAGEX")
+
+        /** More than this past the last frame, and not a tag: frames we lost track of, not an ending. */
+        private const val MAX_UNKNOWN_ENDING = 64 * 1024
+
+        fun cut(b: Src, startWanted: Long, endWanted: Long, silence: Silence, out: OutputStream): Cut? {
+            // The first frame: within 1 MB after the tags at the start (which can hold a big cover).
+            var p = nextFrame(b, id3v2Length(b), null, limit = 1 shl 20)
+            if (p < 0) throw Unsupported("No MP3 frames found")
+            val first = header(b, p)!!
             val head = p
             var offsets = IntArray(1 shl 14)
             var count = 0
@@ -228,13 +247,19 @@ object SilenceTrimmer {
                     audioEnd = p
                     continue
                 }
-                // Stray bytes between frames (real files have them; players skip them): the frames go on
-                // where a frame starts that the next one follows. They stay in the file as they are.
-                p = resync(b, p + 1, first)
+                // Stray bytes between frames (real files have them, players skip them; even a whole ID3v1
+                // tag left in the middle of "Me Myself and I.mp3"): the frames go on where real frames
+                // start again, [CONFIRM] in a row. The stray bytes stay in the file as they are.
+                p = nextFrame(b, p + 1, first)
                 if (p < 0) break
             }
-            // Past the last frame there's no more audio, only what ends the file (ID3v1, APE, Lyrics3
-            // tags, padding): kept as it is.
+            // Past the last frame there's no more audio, only what ends the file (tags, padding): kept as
+            // it is. A lot of something else means frames the reader lost track of (a mix whose format
+            // changes partway): cutting there could drop audio, so it isn't cut at all.
+            val ending = b.size - audioEnd
+            if (ending > MAX_UNKNOWN_ENDING && !tagAt(b, audioEnd) && !apeFooterAtEnd(b)) {
+                throw Unsupported("The MP3's frames couldn't be followed to its end")
+            }
 
             // A Xing/Info frame (LAME) or VBRI frame first: it holds the length, it's not audio.
             val side = if (first.version == 3) (if (first.mono) 17 else 32) else (if (first.mono) 9 else 17)
