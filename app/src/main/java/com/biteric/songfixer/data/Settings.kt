@@ -21,6 +21,8 @@ data class SettingsState(
     val normalize: Boolean = true,
     /** Find the silence at each song's start and end, and cut it off when fixing (for gapless mixing). */
     val trimSilence: Boolean = true,
+    /** Keep the untrimmed file of each trimmed song for a week, for "Undo trim". */
+    val keepOriginals: Boolean = true,
 )
 
 class Settings(context: Context) {
@@ -39,6 +41,7 @@ class Settings(context: Context) {
         addCover = prefs.getBoolean("add_cover", true),
         normalize = prefs.getBoolean("normalize", true),
         trimSilence = prefs.getBoolean("trim_silence", true),
+        keepOriginals = prefs.getBoolean("keep_originals", true),
     )
 
     fun update(change: (SettingsState) -> SettingsState) {
@@ -53,6 +56,7 @@ class Settings(context: Context) {
             .putBoolean("add_cover", s.addCover)
             .putBoolean("normalize", s.normalize)
             .putBoolean("trim_silence", s.trimSilence)
+            .putBoolean("keep_originals", s.keepOriginals)
             .apply()
         _state.value = s.copy(acoustIdKey = s.acoustIdKey.trim())
     }

@@ -28,5 +28,6 @@ fun testRepository(context: Context, db: SongDatabase, coverArtUrl: String = NOW
         db.songs(), MusicFolder(context), AudioFingerprinter(context),
         Identifier(AcoustIdApi(NOWHERE, ua), musicBrainz, lrclib), SongWriter(context), Settings(context),
         LyricsFinder(lrclib), lrclib, CoverFinder(musicBrainz, coverArt), coverArt, LoudnessAnalyzer(context),
+        java.io.File(context.filesDir, "originals-test"),
     )
 }

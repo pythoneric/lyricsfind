@@ -129,7 +129,31 @@ class MigrationTest {
         }
     }
 
+    /** v9 adds exact silence positions and kept originals: rows from v8 have neither, and nothing else changes. */
+    @Test
+    fun v8ToV9KeepsTheSongs() = runTest {
+        helper.createDatabase(name, 8).use { db ->
+            db.execSQL(
+                "INSERT INTO songs (uri, fileName, folder, size, modified, status, candidates, loudnessChecked, yearRead, silenceStartMs, silenceEndMs, silenceChecked) " +
+                    "VALUES ('content://x/e.mp3', 'e.mp3', '', 10, 20, 'OK', '[]', 1, 1, 2000, 3000, 1)",
+            )
+        }
+        helper.runMigrationsAndValidate(name, 9, true, *SongDatabase.MIGRATIONS).close()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = Room.databaseBuilder(context, SongDatabase::class.java, name).addMigrations(*SongDatabase.MIGRATIONS).build()
+        try {
+            val song = db.songs().all().single()
+            assertNull(song.silenceMark)
+            assertNull(song.originalPath)
+            assertTrue(song.hasSilenceToTrim)
+        } finally {
+            db.close()
+            context.deleteDatabase(name)
+            java.io.File(context.getDatabasePath(name).path + ".lck").delete()
+        }
+    }
+
     private companion object {
-        const val LATEST = 8
+        const val LATEST = 9
     }
 }

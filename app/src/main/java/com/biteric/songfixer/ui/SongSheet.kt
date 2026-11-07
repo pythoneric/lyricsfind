@@ -72,6 +72,7 @@ fun SongSheet(
     onApply: (NewNames, writeTags: Boolean, rename: Boolean, addLyrics: Boolean, addCover: Boolean, releaseGroupId: String?, normalize: Boolean, trimSilence: Boolean) -> Unit,
     onNormalize: () -> Unit,
     onTrimSilence: () -> Unit,
+    onUndoTrim: () -> Unit,
     onRemeasure: () -> Unit,
     onAddLyrics: () -> Unit,
     onAddCover: () -> Unit,
@@ -319,6 +320,18 @@ fun SongSheet(
                     // Measures again and replaces volume tags, the app's or another program's.
                     TextButton(onClick = onRemeasure, enabled = !busy) { Text("Re-measure") }
                 }
+            }
+            // The untrimmed file is kept for a week: put it back.
+            song.originalPath?.let {
+                TextButton(onClick = onUndoTrim, enabled = !busy) { Text("Undo trim") }
+                Text(
+                    "Puts back the file as it was before the trim (its tags then too). The original is kept until " +
+                        java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM)
+                            .format(java.util.Date((song.originalSavedAt ?: 0L) + com.biteric.songfixer.SongRepository.KEEP_ORIGINALS_MS)) + ".",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 12.dp, bottom = 4.dp),
+                )
             }
             if (song.silenceWorthTrimming && song.status != SongStatus.NEW) {
                 TextButton(onClick = onTrimSilence, enabled = !busy) { Text(if (song.trimError != null) "Try trimming again" else "Trim silence only") }

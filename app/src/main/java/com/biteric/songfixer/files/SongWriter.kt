@@ -22,6 +22,7 @@ import com.biteric.songfixer.loudness.Loudness
 import com.biteric.songfixer.loudness.GainVerdict
 import com.biteric.songfixer.loudness.ReplayGainCheck
 import com.biteric.songfixer.loudness.VolumeTags
+import com.biteric.songfixer.loudness.FileStamp
 import com.biteric.songfixer.loudness.Silence
 import com.biteric.songfixer.fingerprint.PcmDecoder
 import com.biteric.songfixer.fingerprint.PcmSink
@@ -173,15 +174,38 @@ class SongWriter(private val context: Context) {
         }
     }
 
-    /** How much silence was cut off each end, and how much is left there (the margins kept). */
-    data class Trimmed(val startMs: Long, val endMs: Long, val leadLeftMs: Long, val tailLeftMs: Long)
+    /**
+     * How much silence was cut off each end, and how much is left there (the margins kept);
+     * [originalKept] = the untrimmed file was kept where it was asked to be.
+     */
+    data class Trimmed(val startMs: Long, val endMs: Long, val leadLeftMs: Long, val tailLeftMs: Long, val originalKept: Boolean = false)
+
+    /** The song file's size and last-modified time now; null when they can't be read. */
+    suspend fun stamp(uri: Uri): FileStamp? = withContext(Dispatchers.IO) {
+        runCatching {
+            if (uri.scheme == "file") {
+                val f = File(uri.path!!)
+                FileStamp(f.length(), f.lastModified()).takeIf { f.exists() }
+            } else {
+                context.contentResolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)
+                    ?.use { c -> if (c.moveToFirst() && !c.isNull(0) && !c.isNull(1)) FileStamp(c.getLong(0), c.getLong(1)) else null }
+            }
+        }.getOrNull()
+    }
+
+    /** Copies [original] (a kept untrimmed file) back over the song. */
+    suspend fun restore(uri: Uri, original: File) = withContext(Dispatchers.IO) {
+        if (!original.exists()) throw Failed("The original isn't kept any more")
+        context.contentResolver.openOutputStream(uri, "wt")?.use { out -> original.inputStream().use { it.copyTo(out) } }
+            ?: throw Failed("The song's file can't be changed")
+    }
 
     /**
      * Cuts the silence off the song's start and end (see [SilenceTrimmer]), on a copy in the app's
      * cache: [findSilence] listens to that copy, the cut copy must decode and read back, and only
      * then is it copied over the song. Nothing is cut (0, 0) when there's too little silence to bother.
      */
-    suspend fun trimSilence(uri: Uri, extension: String, findSilence: suspend (Uri) -> Silence): Trimmed = withContext(Dispatchers.IO) {
+    suspend fun trimSilence(uri: Uri, extension: String, keepOriginalAs: File? = null, findSilence: suspend (Uri) -> Silence): Trimmed = withContext(Dispatchers.IO) {
         if (extension !in SilenceTrimmer.FORMATS) throw Failed(".$extension files can't be trimmed here")
         val dir = File(context.cacheDir, "trim").apply { mkdirs() }
         val copy = File(dir, "trim.$extension")
@@ -207,9 +231,15 @@ class SongWriter(private val context: Context) {
             }
             context.contentResolver.openOutputStream(uri, "wt")?.use { out -> cut.inputStream().use { it.copyTo(out) } }
                 ?: throw Failed("The song's file can't be changed")
+            // The untrimmed copy becomes the kept original (for "Undo trim"), when one is wanted.
+            val kept = keepOriginalAs != null && runCatching {
+                keepOriginalAs.parentFile?.mkdirs()
+                copy.renameTo(keepOriginalAs) || run { copy.copyTo(keepOriginalAs, overwrite = true); true }
+            }.getOrDefault(false)
             Trimmed(
                 result.startMs, result.endMs,
                 (silence.leadMs - result.startMs).coerceAtLeast(0), (silence.tailMs - result.endMs).coerceAtLeast(0),
+                originalKept = kept,
             )
         } finally {
             copy.delete()

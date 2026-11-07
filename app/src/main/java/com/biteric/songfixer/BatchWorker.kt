@@ -32,6 +32,7 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val kind = kind ?: return Result.failure()
         val app = applicationContext as SongFixerApp
         setForeground(foregroundInfo(kind, 0, 0))
+        runCatching { app.repository.pruneOriginals() }
         var notified = 0L
         val message = Batches(app.repository).run(kind, app.settings.current) { done, total ->
             // The screen's progress after every song; the notification at most once a second, or
